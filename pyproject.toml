@@ -15,6 +15,9 @@ dependencies = [
     "pydantic-settings>=2.4.0"
 ]
 
+[project.scripts]
+veditor = "app.cli:main"
+
 [dependency-groups]
 dev = [
     "pytest>=8.3.2",
@@ -33,3 +36,4 @@ packages = ["app"]
 [tool.ruff]
 line-length = 88
 target-version = "py313"
+exclude = ["migrations"]
