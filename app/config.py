@@ -1,3 +1,5 @@
+from typing import Literal
+
 from pydantic_settings import BaseSettings
 
 
@@ -9,6 +11,9 @@ class Settings(BaseSettings):
     postgres_db: str = "veditor"
 
     redis_url: str = "redis://localhost:6379/0"
+
+    data_dir: str = "data"
+    storage_backend: Literal["local"] = "local"
 
     @property
     def database_url(self) -> str:
