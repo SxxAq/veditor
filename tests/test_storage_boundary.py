@@ -34,7 +34,6 @@ FORBIDDEN_PATH_METHODS = {
     "unlink",
     "rmdir",
     "mkdir",
-    "open",
 }
 
 
@@ -67,11 +66,17 @@ def find_storage_violations(
     lines = source_code.splitlines()
     violations: list[str] = []
 
+    # Track module aliases (e.g., `import shutil as sh` -> `{"sh": "shutil"}`)
+    module_aliases: dict[str, str] = {}
     # Track imported names from forbidden modules (e.g., `from shutil import copyfile`)
     imported_forbidden: dict[str, str] = {}
 
     for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name in ("shutil", "os", "io", "_io"):
+                    module_aliases[alias.asname or alias.name] = alias.name
+        elif isinstance(node, ast.ImportFrom):
             if node.module == "shutil":
                 for alias in node.names:
                     if alias.name in FORBIDDEN_SHUTIL_FUNCS:
@@ -115,20 +120,23 @@ def find_storage_violations(
         elif isinstance(func, ast.Attribute):
             attr_name = func.attr
 
-            # Check `shutil.<func>` or `os.<func>` or `io.open`
+            # Check `shutil.<func>` or `os.<func>` or `io.open` (including aliased imports)
             if isinstance(func.value, ast.Name):
-                module_name = func.value.id
+                module_name = module_aliases.get(func.value.id, func.value.id)
+                alias_info = (
+                    f" (via '{func.value.id}')" if func.value.id != module_name else ""
+                )
                 if module_name == "shutil" and attr_name in FORBIDDEN_SHUTIL_FUNCS:
                     violations.append(
-                        f"{file_path}:{lineno}: Direct call to 'shutil.{attr_name}()'. All file I/O must go through storage.py"
+                        f"{file_path}:{lineno}: Direct call to 'shutil.{attr_name}()'{alias_info}. All file I/O must go through storage.py"
                     )
                 elif module_name == "os" and attr_name in FORBIDDEN_OS_FUNCS:
                     violations.append(
-                        f"{file_path}:{lineno}: Direct call to 'os.{attr_name}()'. All file I/O must go through storage.py"
+                        f"{file_path}:{lineno}: Direct call to 'os.{attr_name}()'{alias_info}. All file I/O must go through storage.py"
                     )
                 elif module_name in ("io", "_io") and attr_name == "open":
                     violations.append(
-                        f"{file_path}:{lineno}: Direct call to 'io.open()'. All file I/O must go through storage.py"
+                        f"{file_path}:{lineno}: Direct call to 'io.open()'{alias_info}. All file I/O must go through storage.py"
                     )
 
             # Check `Path(...).<method>()`
@@ -173,11 +181,15 @@ def test_app_storage_boundary():
 
 def test_storage_boundary_detects_violations():
     """
-    Regression test: Verify that deliberate direct file I/O operations are detected.
+    Regression test: Verify that deliberate direct file I/O operations are detected,
+    including aliased imports.
     """
     violating_snippets = """
 from pathlib import Path
 import shutil
+import shutil as sh
+import os as my_os
+import io as custom_io
 from os import remove
 
 def do_forbidden():
@@ -185,8 +197,10 @@ def do_forbidden():
         f.write("hello")
 
     shutil.copy("a.mp4", "b.mp4")
-    shutil.rmtree("/tmp/folder")
-    remove("old.mp4")
+    sh.rmtree("/tmp/folder")
+    my_os.remove("old.mp4")
+    remove("another_old.mp4")
+    custom_io.open("test.txt")
 
     p = Path("video.mp4")
     p.write_bytes(b"123")
@@ -198,14 +212,41 @@ def do_forbidden():
     assert any("open()" in v for v in violations), "Should catch open()"
     assert any("shutil.copy()" in v for v in violations), "Should catch shutil.copy()"
     assert any("shutil.rmtree()" in v for v in violations), (
-        "Should catch shutil.rmtree()"
+        "Should catch aliased sh.rmtree()"
     )
-    assert any("os.remove()" in v for v in violations), "Should catch imported remove()"
+    assert any("os.remove()" in v for v in violations), (
+        "Should catch aliased my_os.remove()"
+    )
+    assert any("io.open()" in v for v in violations), (
+        "Should catch aliased custom_io.open()"
+    )
     assert any(".write_bytes()" in v for v in violations), (
         "Should catch Path.write_bytes()"
     )
     assert any(".read_text()" in v for v in violations), "Should catch Path.read_text()"
     assert any(".unlink()" in v for v in violations), "Should catch Path.unlink()"
+
+
+def test_storage_boundary_allows_non_path_open_calls():
+    """
+    Verify that legitimate .open() calls on non-Path objects (e.g. webbrowser, PIL, zipfile)
+    are not falsely flagged as violations.
+    """
+    valid_snippets = """
+import webbrowser
+from PIL import Image
+import zipfile
+
+def open_unrelated_things():
+    webbrowser.open("https://example.com")
+    img = Image.open("image.png")
+    with zipfile.ZipFile("archive.zip") as zf:
+        zf.open("file.txt")
+"""
+    violations = find_storage_violations(valid_snippets, file_path="valid_fixture.py")
+    assert violations == [], (
+        f"Expected 0 violations for non-path .open() calls, got: {violations}"
+    )
 
 
 def test_storage_boundary_respects_exemptions():
