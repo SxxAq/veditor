@@ -27,6 +27,10 @@ FORBIDDEN_OS_FUNCS = {
     "mkdir",
     "makedirs",
 }
+# Method names commonly associated with pathlib.Path file operations.
+# Note: As an AST heuristic, these are flagged on any attribute call matching these names.
+# If custom non-Path classes implement methods with these names (e.g. read_text, write_bytes),
+# annotate those call sites with `# storage-boundary-exempt: <reason>`.
 FORBIDDEN_PATH_METHODS = {
     "read_bytes",
     "read_text",
