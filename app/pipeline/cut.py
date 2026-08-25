@@ -208,3 +208,26 @@ def _cut_reencode(
                     out_container.mux(enc_packet)
 
     return CutStrategy.RE_ENCODE
+
+
+if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Trim a video file using PyAV.")
+    parser.add_argument("input", help="Path to input video file")
+    parser.add_argument("output", help="Path to output cut file")
+    parser.add_argument(
+        "--start", type=float, required=True, help="Start time in seconds"
+    )
+    parser.add_argument("--end", type=float, required=True, help="End time in seconds")
+    parser.add_argument("--reencode", action="store_true", help="Force full re-encode")
+
+    args = parser.parse_args()
+    strat = cut(
+        args.input,
+        args.output,
+        start_seconds=args.start,
+        end_seconds=args.end,
+        force_reencode=args.reencode,
+    )
+    print(f"Cut completed successfully using {strat.value} -> {args.output}")
