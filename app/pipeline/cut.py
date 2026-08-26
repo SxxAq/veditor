@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 from enum import Enum
+from fractions import Fraction
 from pathlib import Path
 
 import av
@@ -58,6 +59,7 @@ def cut(
             f"end_seconds ({end_seconds}) must be greater than start_seconds ({start_seconds})"
         )
 
+    # storage-boundary-exempt: creating parent directory for pipeline output
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     if not force_reencode:
@@ -67,7 +69,8 @@ def cut(
             )
         except (av.FFmpegError, ValueError, RuntimeError, OSError) as exc:
             logger.warning(
-                "Stream-copy cut failed (%s); falling back to full re-encode.", exc
+                "Stream-copy cut failed (%s); falling back to full re-encode.",
+                exc,
             )
 
     return _cut_reencode(str(in_path), str(out_path), start_seconds, end_seconds)
@@ -151,6 +154,8 @@ def _cut_reencode(
         with av.open(output_path, mode="w") as out_container:
             out_video = None
             out_audio = None
+            fps = 24
+            sample_rate = 44100
 
             if video_streams:
                 in_v = video_streams[0]
@@ -164,8 +169,8 @@ def _cut_reencode(
             if audio_streams:
                 in_a = audio_streams[0]
                 codec_name = in_a.codec_context.name or "aac"
-                rate = in_a.codec_context.sample_rate or 44100
-                out_audio = out_container.add_stream(codec_name, rate=rate)
+                sample_rate = in_a.codec_context.sample_rate or 44100
+                out_audio = out_container.add_stream(codec_name, rate=sample_rate)
                 out_audio.layout = (
                     in_a.codec_context.layout.name
                     if in_a.codec_context.layout
@@ -175,6 +180,9 @@ def _cut_reencode(
             streams_to_demux = [
                 s for s in (video_streams[:1] + audio_streams[:1]) if s is not None
             ]
+
+            video_frame_count = 0
+            audio_sample_count = 0
 
             for packet in in_container.demux(*streams_to_demux):
                 for frame in packet.decode():
@@ -191,12 +199,22 @@ def _cut_reencode(
                         continue
 
                     if isinstance(frame, av.VideoFrame) and out_video is not None:
-                        frame.pts = None
+                        frame.pts = video_frame_count
+                        frame.time_base = (
+                            Fraction(1, int(fps)) if int(fps) > 0 else Fraction(1, 24)
+                        )
+                        video_frame_count += 1
                         for enc_packet in out_video.encode(frame):
                             out_container.mux(enc_packet)
 
                     elif isinstance(frame, av.AudioFrame) and out_audio is not None:
-                        frame.pts = None
+                        frame.pts = audio_sample_count
+                        frame.time_base = (
+                            Fraction(1, int(sample_rate))
+                            if int(sample_rate) > 0
+                            else Fraction(1, 44100)
+                        )
+                        audio_sample_count += frame.samples
                         for enc_packet in out_audio.encode(frame):
                             out_container.mux(enc_packet)
 

@@ -3,9 +3,9 @@ from pathlib import Path
 import pytest
 
 from app.pipeline.cut import CutStrategy, cut
-from tests.pipeline.gen_video import generate_clip
-from tests.pipeline.helpers import (
+from tests.conftest import (
     assert_playable,
+    generate_clip,
     open_and_inspect,
 )
 
