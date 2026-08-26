@@ -16,6 +16,7 @@ without decoding via lossless stream-copy remuxing.
 from __future__ import annotations
 
 import logging
+import math
 from fractions import Fraction
 from pathlib import Path
 
@@ -42,7 +43,7 @@ def normalize(
 
     Raises:
         FileNotFoundError: If input_path does not exist.
-        ValueError: If target_lufs is out of reasonable range or no audio stream exists.
+        ValueError: If target_lufs is non-finite or out of range, or if no audio stream exists.
     """
     in_path = Path(input_path)
     out_path = Path(output_path)
@@ -50,7 +51,7 @@ def normalize(
     if not in_path.is_file():
         raise FileNotFoundError(f"Input file not found: {in_path}")
 
-    if target_lufs > 0 or target_lufs < -70.0:
+    if not math.isfinite(target_lufs) or target_lufs > 0 or target_lufs < -70.0:
         raise ValueError(
             f"target_lufs must be between -70.0 and 0.0, got: {target_lufs}"
         )
@@ -111,26 +112,28 @@ def normalize(
                     while True:
                         try:
                             out_frame = graph.pull()
-                            out_frame.pts = audio_sample_count
-                            out_frame.time_base = Fraction(1, sample_rate)
-                            audio_sample_count += out_frame.samples
-                            for enc_packet in out_audio.encode(out_frame):
-                                out_container.mux(enc_packet)
                         except av.FFmpegError, EOFError:
                             break
+
+                        out_frame.pts = audio_sample_count
+                        out_frame.time_base = Fraction(1, sample_rate)
+                        audio_sample_count += out_frame.samples
+                        for enc_packet in out_audio.encode(out_frame):
+                            out_container.mux(enc_packet)
 
             # Flush filter graph
             graph.push(None)
             while True:
                 try:
                     out_frame = graph.pull()
-                    out_frame.pts = audio_sample_count
-                    out_frame.time_base = Fraction(1, sample_rate)
-                    audio_sample_count += out_frame.samples
-                    for enc_packet in out_audio.encode(out_frame):
-                        out_container.mux(enc_packet)
                 except av.FFmpegError, EOFError:
                     break
+
+                out_frame.pts = audio_sample_count
+                out_frame.time_base = Fraction(1, sample_rate)
+                audio_sample_count += out_frame.samples
+                for enc_packet in out_audio.encode(out_frame):
+                    out_container.mux(enc_packet)
 
             # Flush audio encoder
             for enc_packet in out_audio.encode():

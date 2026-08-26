@@ -1,3 +1,4 @@
+import math
 from pathlib import Path
 
 import av
@@ -19,21 +20,35 @@ def _measure_audio_rms_db(path: Path | str) -> float:
         samples = []
         for packet in container.demux(container.streams.audio[0]):
             for frame in packet.decode():
-                samples.append(frame.to_ndarray().flatten())
-        data = np.concatenate(samples).astype(np.float64) / 32768.0
+                arr = frame.to_ndarray()
+                if "s16" in frame.format.name:
+                    arr = arr.astype(np.float64) / 32768.0
+                elif "flt" in frame.format.name:
+                    arr = arr.astype(np.float64)
+                samples.append(arr.flatten())
+        data = np.concatenate(samples)
         rms = np.sqrt(np.mean(data**2))
         return float(20 * np.log10(rms + 1e-12))
 
 
 def test_normalize_moves_loudness_towards_target(tmp_path: Path):
-    """Verify that normalizing an audio tone produces a valid, playable clip."""
+    """Verify that normalizing an audio tone produces a valid, playable clip with measured loudness."""
     source_clip = generate_clip(3.0, audio_waveform="tone", output_dir=tmp_path)
     output_clip = tmp_path / "normalized.mp4"
+    target_lufs = -16.0
 
-    normalize(source_clip, output_clip, target_lufs=-16.0)
+    normalize(source_clip, output_clip, target_lufs=target_lufs)
 
     assert output_clip.is_file()
     assert_playable(output_clip)
+
+    source_loudness = _measure_audio_rms_db(source_clip)
+    output_loudness = _measure_audio_rms_db(output_clip)
+
+    # Output loudness is finite and in expected audio range
+    assert math.isfinite(source_loudness)
+    assert math.isfinite(output_loudness)
+    assert abs(output_loudness - target_lufs) <= 2.5
 
     info_source = open_and_inspect(source_clip)
     info_out = open_and_inspect(output_clip)
@@ -105,7 +120,7 @@ def test_normalize_no_audio_stream_raises(tmp_path: Path):
 
 
 def test_normalize_invalid_arguments(tmp_path: Path):
-    """Verify FileNotFoundError and ValueError on invalid inputs."""
+    """Verify FileNotFoundError and ValueError on invalid inputs including NaN/inf."""
     valid_clip = generate_clip(2.0, output_dir=tmp_path)
     output_clip = tmp_path / "out.mp4"
 
@@ -117,3 +132,9 @@ def test_normalize_invalid_arguments(tmp_path: Path):
 
     with pytest.raises(ValueError, match="target_lufs must be between"):
         normalize(valid_clip, output_clip, target_lufs=-80.0)
+
+    with pytest.raises(ValueError, match="target_lufs must be between"):
+        normalize(valid_clip, output_clip, target_lufs=float("nan"))
+
+    with pytest.raises(ValueError, match="target_lufs must be between"):
+        normalize(valid_clip, output_clip, target_lufs=float("inf"))
