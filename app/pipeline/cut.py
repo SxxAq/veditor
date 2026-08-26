@@ -95,6 +95,7 @@ def _cut_stream_copy(
         with av.open(output_path, mode="w") as out_container:
             out_streams: dict[int, av.stream.Stream] = {}
             offset_map: dict[int, int] = {}
+            streams_past_end: set[int] = set()
 
             for stream in streams:
                 out_stream = out_container.add_stream_from_template(stream)
@@ -117,6 +118,9 @@ def _cut_stream_copy(
                 )
 
                 if packet_time_s > end_seconds:
+                    streams_past_end.add(stream.index)
+                    if len(streams_past_end) >= len(streams):
+                        break
                     continue
 
                 if stream.index not in offset_map:
@@ -154,28 +158,33 @@ def _cut_reencode(
         with av.open(output_path, mode="w") as out_container:
             out_video = None
             out_audio = None
-            fps = 24
+            video_time_base = Fraction(1, 24)
             sample_rate = 44100
 
             if video_streams:
                 in_v = video_streams[0]
                 codec_name = in_v.codec_context.name or "libx264"
-                fps = in_v.average_rate or 24
+                fps = in_v.average_rate or in_v.guessed_rate or 24
                 out_video = out_container.add_stream(codec_name, rate=fps)
                 out_video.width = in_v.codec_context.width
                 out_video.height = in_v.codec_context.height
                 out_video.pix_fmt = in_v.codec_context.pix_fmt or "yuv420p"
+                video_time_base = (
+                    Fraction(1, 1) / Fraction(fps) if fps else Fraction(1, 24)
+                )
 
             if audio_streams:
                 in_a = audio_streams[0]
                 codec_name = in_a.codec_context.name or "aac"
                 sample_rate = in_a.codec_context.sample_rate or 44100
+                channels = in_a.codec_context.channels or 1
                 out_audio = out_container.add_stream(codec_name, rate=sample_rate)
-                out_audio.layout = (
-                    in_a.codec_context.layout.name
-                    if in_a.codec_context.layout
-                    else "mono"
-                )
+                if in_a.codec_context.layout:
+                    out_audio.layout = in_a.codec_context.layout.name
+                elif channels == 2:
+                    out_audio.layout = "stereo"
+                else:
+                    out_audio.layout = "mono"
 
             streams_to_demux = [
                 s for s in (video_streams[:1] + audio_streams[:1]) if s is not None
@@ -183,8 +192,12 @@ def _cut_reencode(
 
             video_frame_count = 0
             audio_sample_count = 0
+            streams_past_end: set[int] = set()
 
             for packet in in_container.demux(*streams_to_demux):
+                if len(streams_past_end) >= len(streams_to_demux):
+                    break
+
                 for frame in packet.decode():
                     time_base = (
                         float(frame.time_base) if frame.time_base is not None else 1.0
@@ -195,25 +208,25 @@ def _cut_reencode(
                         else (frame.time if frame.time is not None else 0.0)
                     )
 
-                    if frame_time_s < start_seconds or frame_time_s > end_seconds:
+                    if frame_time_s > end_seconds:
+                        streams_past_end.add(packet.stream.index)
+                        if len(streams_past_end) >= len(streams_to_demux):
+                            break
+                        continue
+
+                    if frame_time_s < start_seconds:
                         continue
 
                     if isinstance(frame, av.VideoFrame) and out_video is not None:
                         frame.pts = video_frame_count
-                        frame.time_base = (
-                            Fraction(1, int(fps)) if int(fps) > 0 else Fraction(1, 24)
-                        )
+                        frame.time_base = video_time_base
                         video_frame_count += 1
                         for enc_packet in out_video.encode(frame):
                             out_container.mux(enc_packet)
 
                     elif isinstance(frame, av.AudioFrame) and out_audio is not None:
                         frame.pts = audio_sample_count
-                        frame.time_base = (
-                            Fraction(1, int(sample_rate))
-                            if int(sample_rate) > 0
-                            else Fraction(1, 44100)
-                        )
+                        frame.time_base = Fraction(1, sample_rate)
                         audio_sample_count += frame.samples
                         for enc_packet in out_audio.encode(frame):
                             out_container.mux(enc_packet)
@@ -226,26 +239,3 @@ def _cut_reencode(
                     out_container.mux(enc_packet)
 
     return CutStrategy.RE_ENCODE
-
-
-if __name__ == "__main__":
-    import argparse
-
-    parser = argparse.ArgumentParser(description="Trim a video file using PyAV.")
-    parser.add_argument("input", help="Path to input video file")
-    parser.add_argument("output", help="Path to output cut file")
-    parser.add_argument(
-        "--start", type=float, required=True, help="Start time in seconds"
-    )
-    parser.add_argument("--end", type=float, required=True, help="End time in seconds")
-    parser.add_argument("--reencode", action="store_true", help="Force full re-encode")
-
-    args = parser.parse_args()
-    strat = cut(
-        args.input,
-        args.output,
-        start_seconds=args.start,
-        end_seconds=args.end,
-        force_reencode=args.reencode,
-    )
-    print(f"Cut completed successfully using {strat.value} -> {args.output}")
