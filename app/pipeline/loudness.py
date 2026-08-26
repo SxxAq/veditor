@@ -10,7 +10,7 @@ PyAV's `av.filter.Graph` API directly supports libavfilter's `loudnorm`
 filter. This implementation uses a single-pass `loudnorm` filter configured
 with the desired integrated loudness target (`I`), true peak (`TP=-1.5`),
 and loudness range (`LRA=11`). Video streams (if present) are preserved
-without decoding via lossless stream-copy remuxing.
+without decoding via lossless stream-copy remuxing in a single interleaved pass.
 """
 
 from __future__ import annotations
@@ -68,6 +68,15 @@ def normalize(
 
         in_a = audio_streams[0]
         sample_rate = in_a.codec_context.sample_rate or 44100
+        channels = in_a.codec_context.channels or 1
+
+        # Determine audio channel layout with fallback based on channel count
+        if in_a.codec_context.layout:
+            layout_name = in_a.codec_context.layout.name
+        elif channels == 2:
+            layout_name = "stereo"
+        else:
+            layout_name = "mono"
 
         # Construct audio filter graph: abuffer -> loudnorm -> abuffersink
         graph = av.filter.Graph()
@@ -90,36 +99,37 @@ def normalize(
 
             # 2. Configure normalized audio stream
             out_audio = out_container.add_stream("aac", rate=sample_rate)
-            out_audio.layout = (
-                in_a.codec_context.layout.name if in_a.codec_context.layout else "mono"
-            )
+            out_audio.layout = layout_name
 
-            # Mux video packets if present
-            if out_video is not None:
-                for packet in in_container.demux(video_streams[0]):
+            # Streams to demux in a single interleaved pass
+            streams_to_demux = [
+                s for s in (video_streams[:1] + audio_streams[:1]) if s is not None
+            ]
+
+            audio_sample_count = 0
+
+            # Single interleaved demuxing pass without seeking
+            for packet in in_container.demux(*streams_to_demux):
+                if packet.stream.type == "video" and out_video is not None:
                     if packet.dts is None:
                         continue
                     packet.stream = out_video
                     out_container.mux(packet)
 
-            # Demux, filter, encode, and mux audio packets
-            in_container.seek(0)
-            audio_sample_count = 0
+                elif packet.stream.type == "audio":
+                    for frame in packet.decode():
+                        graph.push(frame)
+                        while True:
+                            try:
+                                out_frame = graph.pull()
+                            except av.FFmpegError, EOFError:
+                                break
 
-            for packet in in_container.demux(in_a):
-                for frame in packet.decode():
-                    graph.push(frame)
-                    while True:
-                        try:
-                            out_frame = graph.pull()
-                        except av.FFmpegError, EOFError:
-                            break
-
-                        out_frame.pts = audio_sample_count
-                        out_frame.time_base = Fraction(1, sample_rate)
-                        audio_sample_count += out_frame.samples
-                        for enc_packet in out_audio.encode(out_frame):
-                            out_container.mux(enc_packet)
+                            out_frame.pts = audio_sample_count
+                            out_frame.time_base = Fraction(1, sample_rate)
+                            audio_sample_count += out_frame.samples
+                            for enc_packet in out_audio.encode(out_frame):
+                                out_container.mux(enc_packet)
 
             # Flush filter graph
             graph.push(None)
@@ -138,23 +148,3 @@ def normalize(
             # Flush audio encoder
             for enc_packet in out_audio.encode():
                 out_container.mux(enc_packet)
-
-
-if __name__ == "__main__":
-    import argparse
-
-    parser = argparse.ArgumentParser(
-        description="Normalize audio loudness using PyAV loudnorm filter."
-    )
-    parser.add_argument("input", help="Path to input media file")
-    parser.add_argument("output", help="Path to output normalized media file")
-    parser.add_argument(
-        "--target-lufs",
-        type=float,
-        default=DEFAULT_TARGET_LUFS,
-        help=f"Target integrated loudness in LUFS (default: {DEFAULT_TARGET_LUFS})",
-    )
-
-    args = parser.parse_args()
-    normalize(args.input, args.output, target_lufs=args.target_lufs)
-    print(f"Audio normalized successfully -> {args.output}")

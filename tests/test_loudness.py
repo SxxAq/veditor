@@ -59,8 +59,15 @@ def test_normalize_moves_loudness_towards_target(tmp_path: Path):
     assert abs(info_out.duration - info_source.duration) <= 0.8
 
 
+def _count_video_packets(path: Path | str) -> int:
+    """Count video packets in the first video stream."""
+    with av.open(str(path)) as container:
+        assert container.streams.video, "No video stream found"
+        return sum(1 for packet in container.demux(container.streams.video[0]))
+
+
 def test_normalize_preserves_video_stream(tmp_path: Path):
-    """Verify that video stream properties are preserved without corruption."""
+    """Verify that video stream properties and frame count are preserved without corruption."""
     source_clip = generate_clip(
         3.0,
         has_video=True,
@@ -85,6 +92,8 @@ def test_normalize_preserves_video_stream(tmp_path: Path):
     assert info_source.duration is not None
     assert info_out.duration is not None
     assert abs(info_out.duration - info_source.duration) <= 0.8
+    # Exact video packet count must be identical (lossless stream copy)
+    assert _count_video_packets(output_clip) == _count_video_packets(source_clip)
 
 
 def test_normalize_audio_only(tmp_path: Path):
@@ -97,11 +106,16 @@ def test_normalize_audio_only(tmp_path: Path):
         output_dir=tmp_path,
     )
     output_clip = tmp_path / "normalized_audio_only.mp4"
+    target_lufs = -14.0
 
-    normalize(source_clip, output_clip, target_lufs=-14.0)
+    normalize(source_clip, output_clip, target_lufs=target_lufs)
 
     assert output_clip.is_file()
     assert_playable(output_clip)
+
+    output_loudness = _measure_audio_rms_db(output_clip)
+    assert math.isfinite(output_loudness)
+    assert abs(output_loudness - target_lufs) <= 2.5
 
     info = open_and_inspect(output_clip)
     assert info.has_video is False
