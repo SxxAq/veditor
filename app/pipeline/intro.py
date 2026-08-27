@@ -1,8 +1,8 @@
-"""Opening title slate and audio jingle rendering module for VEditor pipeline.
+"""Opening title slate, outro slate, and audio jingle rendering module for VEditor pipeline.
 
 Renders high-definition title slates (event name, talk title, speakers, room/date,
-and event logo) and muxes an opening audio jingle to produce a standard introductory
-video segment for conference talks.
+and event logo) and outro slates, muxing an opening/closing audio jingle to produce
+standard introductory and concluding video segments for conference talks.
 """
 
 from __future__ import annotations
@@ -14,9 +14,27 @@ from pathlib import Path
 
 import av
 import numpy as np
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFont
 
 logger = logging.getLogger(__name__)
+
+
+def _get_font(size: int, bold: bool = False) -> ImageFont.ImageFont:
+    """Loads a scalable TrueType font with graceful fallback."""
+    font_candidates = (
+        ["DejaVuSans-Bold.ttf", "LiberationSans-Bold.ttf", "DejaVuSans.ttf"]
+        if bold
+        else ["DejaVuSans.ttf", "LiberationSans-Regular.ttf"]
+    )
+    for name in font_candidates:
+        try:
+            return ImageFont.truetype(name, size=size)
+        except OSError:
+            continue
+    try:
+        return ImageFont.load_default(size=size)
+    except TypeError:
+        return ImageFont.load_default()
 
 
 def _create_title_slate_image(
@@ -27,32 +45,37 @@ def _create_title_slate_image(
     logo_path: Path | str | None,
     resolution: tuple[int, int],
 ) -> np.ndarray:
-    """Renders a title slate RGB numpy array."""
+    """Renders an intro title slate RGB numpy array."""
     width, height = resolution
     img = Image.new("RGB", (width, height), color=(15, 23, 42))
     draw = ImageDraw.Draw(img)
 
-    # 1. Subtle vertical gradient background (slate dark -> midnight blue)
+    # 1. Subtle vertical gradient background (deep slate -> dark indigo)
     for y in range(height):
         ratio = y / max(height - 1, 1)
-        r = int(15 + (30 - 15) * ratio)
-        g = int(23 + (41 - 23) * ratio)
-        b = int(42 + (59 - 42) * ratio)
+        r = int(15 + (26 - 15) * ratio)
+        g = int(23 + (32 - 23) * ratio)
+        b = int(42 + (58 - 42) * ratio)
         draw.line([(0, y), (width, y)], fill=(r, g, b))
 
-    # 2. Composite event logo if supplied
-    content_x = int(width * 0.08)
-    content_y = int(height * 0.12)
+    # Scalable typography based on frame height
+    event_font = _get_font(int(height * 0.038), bold=True)
+    title_font = _get_font(int(height * 0.056), bold=True)
+    speaker_font = _get_font(int(height * 0.042), bold=False)
+    meta_font = _get_font(int(height * 0.032), bold=False)
 
+    content_x = int(width * 0.08)
+    content_y = int(height * 0.14)
+
+    # 2. Composite event logo if supplied
     if logo_path:
         lp = Path(logo_path)
         if lp.is_file():
             try:
                 with Image.open(lp) as logo_img:
                     logo_rgba = logo_img.convert("RGBA")
-                    # Scale logo to fit nicely within header bounds
-                    max_logo_w = int(width * 0.25)
-                    max_logo_h = int(height * 0.15)
+                    max_logo_w = int(width * 0.22)
+                    max_logo_h = int(height * 0.16)
                     logo_rgba.thumbnail(
                         (max_logo_w, max_logo_h), Image.Resampling.LANCZOS
                     )
@@ -61,25 +84,29 @@ def _create_title_slate_image(
             except (OSError, ValueError) as exc:
                 logger.warning("Failed to composite logo image %s: %s", logo_path, exc)
 
-    # 3. Draw Event Name
     y_offset = content_y
+
+    # 3. Draw Event Name
     if event_name:
         draw.text(
             (content_x, y_offset),
             event_name.upper(),
+            font=event_font,
             fill=(56, 189, 248),  # Sky blue accent
         )
         y_offset += int(height * 0.08)
 
     # 4. Draw Talk Title (wrapped)
-    title_text = _wrap_text(title, max_chars=42)
+    title_text = _wrap_text(title, max_chars=36)
     draw.text(
         (content_x, y_offset),
         title_text,
+        font=title_font,
         fill=(255, 255, 255),  # Pure white
+        spacing=int(height * 0.015),
     )
     title_lines = title_text.count("\n") + 1
-    y_offset += title_lines * int(height * 0.07) + int(height * 0.05)
+    y_offset += title_lines * int(height * 0.075) + int(height * 0.04)
 
     # 5. Draw Speaker Names
     if isinstance(speakers, (list, tuple)):
@@ -91,16 +118,93 @@ def _create_title_slate_image(
         draw.text(
             (content_x, y_offset),
             f"Speaker: {speaker_str}",
+            font=speaker_font,
             fill=(203, 213, 225),  # Light slate
         )
-        y_offset += int(height * 0.08)
+        y_offset += int(height * 0.075)
 
     # 6. Draw Room & Date
     if room_date:
         draw.text(
             (content_x, y_offset),
             room_date,
+            font=meta_font,
             fill=(148, 163, 184),  # Muted slate
+        )
+
+    return np.array(img)
+
+
+def _create_outro_slate_image(
+    event_name: str,
+    thank_you_text: str,
+    website_or_links: str,
+    logo_path: Path | str | None,
+    resolution: tuple[int, int],
+) -> np.ndarray:
+    """Renders a centered outro slate RGB numpy array."""
+    width, height = resolution
+    img = Image.new("RGB", (width, height), color=(15, 23, 42))
+    draw = ImageDraw.Draw(img)
+
+    for y in range(height):
+        ratio = y / max(height - 1, 1)
+        r = int(15 + (26 - 15) * ratio)
+        g = int(23 + (32 - 23) * ratio)
+        b = int(42 + (58 - 42) * ratio)
+        draw.line([(0, y), (width, y)], fill=(r, g, b))
+
+    event_font = _get_font(int(height * 0.042), bold=True)
+    main_font = _get_font(int(height * 0.072), bold=True)
+    sub_font = _get_font(int(height * 0.038), bold=False)
+
+    center_x = width // 2
+
+    # Optional centered logo at top
+    start_y = int(height * 0.22)
+    if logo_path:
+        lp = Path(logo_path)
+        if lp.is_file():
+            try:
+                with Image.open(lp) as logo_img:
+                    logo_rgba = logo_img.convert("RGBA")
+                    max_logo_w = int(width * 0.25)
+                    max_logo_h = int(height * 0.18)
+                    logo_rgba.thumbnail(
+                        (max_logo_w, max_logo_h), Image.Resampling.LANCZOS
+                    )
+                    logo_x = center_x - (logo_rgba.width // 2)
+                    img.paste(logo_rgba, (logo_x, int(height * 0.12)), mask=logo_rgba)
+                    start_y = int(height * 0.38)
+            except (OSError, ValueError) as exc:
+                logger.warning("Failed to composite outro logo: %s", exc)
+
+    if event_name:
+        draw.text(
+            (center_x, start_y),
+            event_name.upper(),
+            font=event_font,
+            fill=(56, 189, 248),
+            anchor="mm",
+        )
+        start_y += int(height * 0.13)
+
+    draw.text(
+        (center_x, start_y),
+        thank_you_text,
+        font=main_font,
+        fill=(255, 255, 255),
+        anchor="mm",
+    )
+    start_y += int(height * 0.15)
+
+    if website_or_links:
+        draw.text(
+            (center_x, start_y),
+            website_or_links,
+            font=sub_font,
+            fill=(203, 213, 225),
+            anchor="mm",
         )
 
     return np.array(img)
@@ -181,72 +285,21 @@ def _get_audio_samples(
     return np.vstack([audio_int16, audio_int16])
 
 
-def generate_intro_clip(
+def _render_video_and_audio(
     output_path: Path | str,
-    title: str,
-    speakers: list[str] | str,
-    event_name: str = "",
-    room_date: str = "",
-    logo_path: Path | str | None = None,
-    audio_jingle_path: Path | str | None = None,
-    duration_seconds: float = 4.0,
-    resolution: tuple[int, int] = (1920, 1080),
-    fps: int = 24,
+    slate_ndarray: np.ndarray,
+    audio_samples: np.ndarray,
+    duration_seconds: float,
+    resolution: tuple[int, int],
+    fps: int,
 ) -> None:
-    """Generates an opening title slate video clip with synchronized audio.
-
-    Args:
-        output_path: Destination path for the rendered intro video.
-        title: Talk title.
-        speakers: Speaker name or list of speaker names.
-        event_name: Name of the event or conference.
-        room_date: Track, room, or date metadata string.
-        logo_path: Optional path to event logo image.
-        audio_jingle_path: Optional path to opening audio jingle media.
-        duration_seconds: Desired intro clip duration (default: 4.0s).
-        resolution: Target video resolution tuple (width, height) (default: (1920, 1080)).
-        fps: Target video framerate (default: 24).
-
-    Raises:
-        ValueError: If duration_seconds, fps, or resolution are non-positive.
-        FileNotFoundError: If logo_path or audio_jingle_path are specified but not found.
-    """
-    if duration_seconds <= 0:
-        raise ValueError(f"duration_seconds must be positive, got {duration_seconds}")
-    if fps <= 0:
-        raise ValueError(f"fps must be positive, got {fps}")
-    if resolution[0] <= 0 or resolution[1] <= 0:
-        raise ValueError(f"resolution must be positive, got {resolution}")
-
-    if logo_path is not None:
-        lp = Path(logo_path)
-        if not lp.is_file():
-            raise FileNotFoundError(f"Logo file not found: {lp}")
-
+    """Encodes slate frame and audio samples into an MP4 container."""
     out_path = Path(output_path)
 
     # storage-boundary-exempt: creating parent directory for pipeline output
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # 1. Render title slate frame
-    slate_ndarray = _create_title_slate_image(
-        title=title,
-        speakers=speakers,
-        event_name=event_name,
-        room_date=room_date,
-        logo_path=logo_path,
-        resolution=resolution,
-    )
-
-    # 2. Get audio samples
     sample_rate = 44100
-    audio_samples = _get_audio_samples(
-        jingle_path=audio_jingle_path,
-        duration_s=duration_seconds,
-        sample_rate=sample_rate,
-    )
-
-    # 3. Encode video and audio with PyAV
     total_video_frames = round(duration_seconds * fps)
     total_audio_samples = audio_samples.shape[1]
 
@@ -295,3 +348,99 @@ def generate_intro_clip(
 
         for packet in out_a.encode():
             out_container.mux(packet)
+
+
+def generate_intro_clip(
+    output_path: Path | str,
+    title: str,
+    speakers: list[str] | str,
+    event_name: str = "",
+    room_date: str = "",
+    logo_path: Path | str | None = None,
+    audio_jingle_path: Path | str | None = None,
+    duration_seconds: float = 4.0,
+    resolution: tuple[int, int] = (1920, 1080),
+    fps: int = 24,
+) -> None:
+    """Generates an opening title slate video clip with synchronized audio."""
+    if duration_seconds <= 0:
+        raise ValueError(f"duration_seconds must be positive, got {duration_seconds}")
+    if fps <= 0:
+        raise ValueError(f"fps must be positive, got {fps}")
+    if resolution[0] <= 0 or resolution[1] <= 0:
+        raise ValueError(f"resolution must be positive, got {resolution}")
+
+    if logo_path is not None:
+        lp = Path(logo_path)
+        if not lp.is_file():
+            raise FileNotFoundError(f"Logo file not found: {lp}")
+
+    slate_ndarray = _create_title_slate_image(
+        title=title,
+        speakers=speakers,
+        event_name=event_name,
+        room_date=room_date,
+        logo_path=logo_path,
+        resolution=resolution,
+    )
+
+    audio_samples = _get_audio_samples(
+        jingle_path=audio_jingle_path,
+        duration_s=duration_seconds,
+    )
+
+    _render_video_and_audio(
+        output_path=output_path,
+        slate_ndarray=slate_ndarray,
+        audio_samples=audio_samples,
+        duration_seconds=duration_seconds,
+        resolution=resolution,
+        fps=fps,
+    )
+
+
+def generate_outro_clip(
+    output_path: Path | str,
+    event_name: str = "",
+    thank_you_text: str = "Thank You For Watching!",
+    website_or_links: str = "eventyay.com • fossasia.org",
+    logo_path: Path | str | None = None,
+    audio_jingle_path: Path | str | None = None,
+    duration_seconds: float = 3.5,
+    resolution: tuple[int, int] = (1920, 1080),
+    fps: int = 24,
+) -> None:
+    """Generates a closing outro video clip with event branding and links."""
+    if duration_seconds <= 0:
+        raise ValueError(f"duration_seconds must be positive, got {duration_seconds}")
+    if fps <= 0:
+        raise ValueError(f"fps must be positive, got {fps}")
+    if resolution[0] <= 0 or resolution[1] <= 0:
+        raise ValueError(f"resolution must be positive, got {resolution}")
+
+    if logo_path is not None:
+        lp = Path(logo_path)
+        if not lp.is_file():
+            raise FileNotFoundError(f"Logo file not found: {lp}")
+
+    slate_ndarray = _create_outro_slate_image(
+        event_name=event_name,
+        thank_you_text=thank_you_text,
+        website_or_links=website_or_links,
+        logo_path=logo_path,
+        resolution=resolution,
+    )
+
+    audio_samples = _get_audio_samples(
+        jingle_path=audio_jingle_path,
+        duration_s=duration_seconds,
+    )
+
+    _render_video_and_audio(
+        output_path=output_path,
+        slate_ndarray=slate_ndarray,
+        audio_samples=audio_samples,
+        duration_seconds=duration_seconds,
+        resolution=resolution,
+        fps=fps,
+    )

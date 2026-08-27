@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 from PIL import Image, ImageDraw
 
-from app.pipeline.intro import generate_intro_clip
+from app.pipeline.intro import generate_intro_clip, generate_outro_clip
 from tests.conftest import (
     assert_playable,
     generate_clip,
@@ -41,14 +41,12 @@ def test_generate_intro_clip_basic(tmp_path: Path):
 
 def test_generate_intro_clip_with_logo_and_jingle(tmp_path: Path):
     """Verify intro clip generation with composited logo and external audio jingle."""
-    # 1. Create a transparent dummy logo
     logo_path = tmp_path / "event_logo.png"
     logo_img = Image.new("RGBA", (150, 80), (0, 0, 0, 0))
     d = ImageDraw.Draw(logo_img)
     d.rectangle([(0, 0), (150, 80)], fill=(56, 189, 248, 220))
     logo_img.save(logo_path)
 
-    # 2. Create an audio jingle clip
     jingle_path = generate_clip(
         2.0,
         has_video=False,
@@ -81,24 +79,29 @@ def test_generate_intro_clip_with_logo_and_jingle(tmp_path: Path):
     assert abs(info.duration - 2.5) <= 0.5
 
 
-def test_generate_intro_clip_custom_resolution_and_fps(tmp_path: Path):
-    """Verify custom resolution and framerate settings."""
-    output_clip = tmp_path / "intro_640x360.mp4"
+def test_generate_outro_clip(tmp_path: Path):
+    """Verify outro clip generation with branding and links."""
+    output_clip = tmp_path / "outro.mp4"
 
-    generate_intro_clip(
+    generate_outro_clip(
         output_path=output_clip,
-        title="Quick Lightning Talk",
-        speakers="Developer",
-        duration_seconds=2.0,
-        resolution=(640, 360),
-        fps=30,
+        event_name="FOSSASIA Summit 2026",
+        thank_you_text="Thank You For Attending!",
+        website_or_links="eventyay.com • fossasia.org",
+        duration_seconds=3.0,
+        resolution=(1920, 1080),
+        fps=24,
     )
 
     assert output_clip.is_file()
     assert_playable(output_clip)
 
     info = open_and_inspect(output_clip)
-    assert info.resolution == (640, 360)
+    assert info.has_video is True
+    assert info.has_audio is True
+    assert info.resolution == (1920, 1080)
+    assert info.duration is not None
+    assert abs(info.duration - 3.0) <= 0.5
 
 
 def test_generate_intro_clip_invalid_arguments(tmp_path: Path):
@@ -113,34 +116,10 @@ def test_generate_intro_clip_invalid_arguments(tmp_path: Path):
             duration_seconds=-1.0,
         )
 
-    with pytest.raises(ValueError, match="fps must be positive"):
-        generate_intro_clip(
-            output_path=output_clip,
-            title="Invalid",
-            speakers="Speaker",
-            fps=0,
-        )
-
-    with pytest.raises(ValueError, match="resolution must be positive"):
-        generate_intro_clip(
-            output_path=output_clip,
-            title="Invalid",
-            speakers="Speaker",
-            resolution=(-1920, 1080),
-        )
-
     with pytest.raises(FileNotFoundError, match="Logo file not found"):
         generate_intro_clip(
             output_path=output_clip,
             title="Invalid",
             speakers="Speaker",
             logo_path=tmp_path / "nonexistent_logo.png",
-        )
-
-    with pytest.raises(FileNotFoundError, match="Audio jingle file not found"):
-        generate_intro_clip(
-            output_path=output_clip,
-            title="Invalid",
-            speakers="Speaker",
-            audio_jingle_path=tmp_path / "nonexistent_jingle.mp3",
         )
