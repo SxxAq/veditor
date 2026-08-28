@@ -30,6 +30,7 @@ class TranscodePreset:
     audio_codec: str = "aac"
     audio_bitrate: int = 192_000
     container_format: str = "mp4"
+    pix_fmt: str = "yuv420p"
     max_width: int | None = None
     max_height: int | None = None
 
@@ -42,6 +43,7 @@ PRESET_1080P_DEFAULT = TranscodePreset(
     audio_codec="aac",
     audio_bitrate=192_000,
     container_format="mp4",
+    pix_fmt="yuv420p",
 )
 
 PRESET_720P = TranscodePreset(
@@ -52,6 +54,7 @@ PRESET_720P = TranscodePreset(
     audio_codec="aac",
     audio_bitrate=128_000,
     container_format="mp4",
+    pix_fmt="yuv420p",
     max_width=1280,
     max_height=720,
 )
@@ -64,6 +67,7 @@ PRESET_4K_MASTER = TranscodePreset(
     audio_codec="aac",
     audio_bitrate=256_000,
     container_format="mp4",
+    pix_fmt="yuv420p",
 )
 
 
@@ -109,8 +113,15 @@ def transcode(
             else 0.0
         )
 
+        container_options: dict[str, str] = {}
+        if active_preset.container_format == "mp4":
+            container_options["movflags"] = "faststart"
+
         with av.open(
-            str(out_path), mode="w", format=active_preset.container_format
+            str(out_path),
+            mode="w",
+            format=active_preset.container_format,
+            options=container_options if container_options else None,
         ) as out_container:
             out_video = None
             out_audio = None
@@ -159,7 +170,8 @@ def transcode(
                 # Ensure dimensions are even numbers for H.264 / yuv420p
                 out_video.width = (width // 2) * 2 if width else 640
                 out_video.height = (height // 2) * 2 if height else 480
-                out_video.pix_fmt = in_v.codec_context.pix_fmt or "yuv420p"
+                # Enforce web-safe pixel format (e.g. yuv420p)
+                out_video.pix_fmt = active_preset.pix_fmt
 
                 if active_preset.video_bitrate:
                     out_video.bit_rate = active_preset.video_bitrate
@@ -193,26 +205,36 @@ def transcode(
 
             video_frame_count = 0
             audio_sample_count = 0
+            stream_first_pts: dict[int, float] = {}
             last_reported_pct = 0.0
 
             for packet in in_container.demux(*streams_to_demux):
-                # Progress calculation throttled to >= 2% delta
+                # Progress calculation relative to stream start timestamp throttled to >= 2% delta
                 if on_progress and in_duration_s > 0:
                     ts = packet.pts if packet.pts is not None else packet.dts
                     if ts is not None:
+                        stream_idx = packet.stream.index
                         tb = (
                             float(packet.stream.time_base)
                             if packet.stream.time_base
                             else (1.0 / av.time_base)
                         )
-                        curr_s = float(ts * tb)
-                        pct = min(0.99, max(0.0, curr_s / in_duration_s))
+                        current_ts_s = float(ts * tb)
+                        if stream_idx not in stream_first_pts:
+                            stream_first_pts[stream_idx] = current_ts_s
+
+                        elapsed_s = max(
+                            0.0, current_ts_s - stream_first_pts[stream_idx]
+                        )
+                        pct = min(0.99, max(0.0, elapsed_s / in_duration_s))
                         if pct - last_reported_pct >= 0.02:
                             on_progress(round(pct, 4))
                             last_reported_pct = pct
 
                 if packet.stream.type == "video" and out_video is not None:
                     for frame in packet.decode():
+                        if frame.format.name != active_preset.pix_fmt:
+                            frame = frame.reformat(format=active_preset.pix_fmt)
                         frame.pts = video_frame_count
                         frame.time_base = video_time_base
                         video_frame_count += 1

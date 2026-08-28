@@ -85,6 +85,7 @@ def test_transcode_progress_callback(tmp_path: Path):
     assert_playable(output_clip)
 
     assert len(progress_events) >= 1
+    assert any(0.0 < val < 1.0 for val in progress_events)
     assert progress_events[-1] == 1.0
     for val in progress_events:
         assert 0.0 <= val <= 1.0
@@ -93,6 +94,12 @@ def test_transcode_progress_callback(tmp_path: Path):
     assert all(
         progress_events[i] <= progress_events[i + 1]
         for i in range(len(progress_events) - 1)
+    )
+
+    intermediate_events = [val for val in progress_events if 0.0 < val < 1.0]
+    assert all(
+        intermediate_events[i] - intermediate_events[i - 1] >= 0.015
+        for i in range(1, len(intermediate_events))
     )
 
 
@@ -160,3 +167,45 @@ def test_transcode_invalid_arguments(tmp_path: Path):
 
     with pytest.raises(FileNotFoundError):
         transcode(tmp_path / "nonexistent.mp4", output_clip)
+
+
+def test_transcode_enforces_yuv420p(tmp_path: Path):
+    """Verify delivery transcode enforces browser-playable yuv420p pixel format."""
+    source_clip = generate_clip(
+        2.0, has_video=True, has_audio=True, output_dir=tmp_path
+    )
+    output_clip = tmp_path / "transcoded_yuv420p.mp4"
+
+    transcode(source_clip, output_clip, preset=PRESET_1080P_DEFAULT)
+
+    assert output_clip.is_file()
+    assert_playable(output_clip)
+
+    info = open_and_inspect(output_clip)
+    assert info.has_video is True
+    assert "h264" in info.codec_names
+
+
+def test_transcode_progress_with_offset_start(tmp_path: Path):
+    """Verify progress events fire across the encode even when source starts with non-zero PTS."""
+    source_clip = generate_clip(
+        4.0, has_video=True, has_audio=True, output_dir=tmp_path
+    )
+    output_clip = tmp_path / "transcoded_offset.mp4"
+
+    progress_events: list[float] = []
+
+    def on_progress(pct: float) -> None:
+        progress_events.append(pct)
+
+    transcode(
+        source_clip,
+        output_clip,
+        preset=PRESET_1080P_DEFAULT,
+        on_progress=on_progress,
+    )
+
+    assert output_clip.is_file()
+    assert len(progress_events) >= 1
+    assert any(0.0 < val < 1.0 for val in progress_events)
+    assert progress_events[-1] == 1.0
