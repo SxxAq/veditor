@@ -312,6 +312,8 @@ def _render_video_and_audio(
 
 def generate_intro_clip(
     output_path: Path | str,
+    talk_metadata: dict[str, Any] | str | None = None,
+    *,
     title: str = "",
     speakers: list[str] | str = "",
     event_name: str = "",
@@ -321,26 +323,67 @@ def generate_intro_clip(
     duration_seconds: float = 4.0,
     resolution: tuple[int, int] = (1920, 1080),
     fps: int = 24,
-    *,
-    talk_metadata: dict[str, Any] | None = None,
 ) -> None:
     """Generates an opening title slate video clip with synchronized audio.
 
-    Supports talk_metadata dictionary ingestion or explicit keyword parameters.
+    Args:
+        output_path: Destination path for the rendered MP4 intro clip.
+        talk_metadata: Metadata dictionary containing talk attributes (title, speakers,
+            event_name, room_date, resolution/fps/duration), or string title.
+        title: Title of the talk (used if not in talk_metadata).
+        speakers: Speaker name(s) (used if not in talk_metadata).
+        event_name: Conference or event name.
+        room_date: Track, room, or date information.
+        logo_path: Path to event/sponsor logo image.
+        audio_jingle_path: Optional path to audio jingle file.
+        duration_seconds: Target clip duration in seconds.
+        resolution: Target video resolution tuple (width, height).
+        fps: Target video frame rate.
     """
-    if talk_metadata:
+    if isinstance(talk_metadata, str):
+        title = talk_metadata
+        talk_metadata = None
+
+    if isinstance(talk_metadata, dict):
         title = talk_metadata.get("title", title)
         speakers = talk_metadata.get("speakers", speakers)
         event_name = talk_metadata.get("event_name", event_name)
         room_date = talk_metadata.get("room_date", room_date)
+
+        # Derive duration from talk metadata
         if "duration_seconds" in talk_metadata:
             duration_seconds = float(talk_metadata["duration_seconds"])
         elif "duration" in talk_metadata:
             duration_seconds = float(talk_metadata["duration"])
+
+        # Derive target resolution from talk/video metadata
         if "resolution" in talk_metadata:
             resolution = tuple(talk_metadata["resolution"])  # type: ignore
+        elif "width" in talk_metadata and "height" in talk_metadata:
+            resolution = (int(talk_metadata["width"]), int(talk_metadata["height"]))
+        elif "video_metadata" in talk_metadata and isinstance(
+            talk_metadata["video_metadata"], dict
+        ):
+            vm = talk_metadata["video_metadata"]
+            if "resolution" in vm:
+                resolution = tuple(vm["resolution"])  # type: ignore
+            elif "width" in vm and "height" in vm:
+                resolution = (int(vm["width"]), int(vm["height"]))
+
+        # Derive framerate from talk/video metadata
         if "fps" in talk_metadata:
             fps = int(talk_metadata["fps"])
+        elif "framerate" in talk_metadata:
+            fps = int(talk_metadata["framerate"])
+        elif "video_metadata" in talk_metadata and isinstance(
+            talk_metadata["video_metadata"], dict
+        ):
+            vm = talk_metadata["video_metadata"]
+            if "fps" in vm:
+                fps = int(vm["fps"])
+            elif "framerate" in vm:
+                fps = int(vm["framerate"])
+
         if "logo_path" in talk_metadata:
             logo_path = talk_metadata["logo_path"]
         if "audio_jingle_path" in talk_metadata:
