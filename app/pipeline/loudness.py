@@ -117,26 +117,29 @@ def normalize(
                     out_container.mux(packet)
 
                 elif packet.stream.type == "audio":
-                    for frame in packet.decode():
-                        graph.push(frame)
-                        while True:
-                            try:
-                                out_frame = graph.pull()
-                            except av.FFmpegError, EOFError:
-                                break
+                    try:
+                        for frame in packet.decode():
+                            graph.push(frame)
+                            while True:
+                                try:
+                                    out_frame = graph.pull()
+                                except (av.FFmpegError, EOFError) as _:
+                                    break
 
-                            out_frame.pts = audio_sample_count
-                            out_frame.time_base = Fraction(1, sample_rate)
-                            audio_sample_count += out_frame.samples
-                            for enc_packet in out_audio.encode(out_frame):
-                                out_container.mux(enc_packet)
+                                out_frame.pts = audio_sample_count
+                                out_frame.time_base = Fraction(1, sample_rate)
+                                audio_sample_count += out_frame.samples
+                                for enc_packet in out_audio.encode(out_frame):
+                                    out_container.mux(enc_packet)
+                    except (av.FFmpegError, EOFError) as _:
+                        continue
 
             # Flush filter graph
             graph.push(None)
             while True:
                 try:
                     out_frame = graph.pull()
-                except av.FFmpegError, EOFError:
+                except (av.FFmpegError, EOFError) as _:
                     break
 
                 out_frame.pts = audio_sample_count
