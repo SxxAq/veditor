@@ -2,7 +2,12 @@ from pathlib import Path
 
 import pytest
 
-from app.pipeline.cut import CutStrategy, cut
+from app.pipeline.cut import (
+    CutStrategy,
+    _resolve_audio_encoder,
+    _resolve_video_encoder,
+    cut,
+)
 from tests.conftest import (
     assert_playable,
     generate_clip,
@@ -124,3 +129,44 @@ def test_cut_invalid_inputs(tmp_path: Path):
         ValueError, match="end_seconds .* must be greater than start_seconds"
     ):
         cut(valid_clip, output_clip, 2.0, 2.0)
+
+
+def test_resolve_encoders():
+    """Verify decoder-to-encoder mapping for video and audio."""
+    assert _resolve_video_encoder("h264") == "libx264"
+    assert _resolve_video_encoder("hevc") == "libx265"
+    assert _resolve_video_encoder("vp9") == "libvpx-vp9"
+    assert _resolve_video_encoder("unknown_codec") == "libx264"
+    assert _resolve_video_encoder(None) == "libx264"
+
+    assert _resolve_audio_encoder("aac") == "aac"
+    assert _resolve_audio_encoder("mp3") == "libmp3lame"
+    assert _resolve_audio_encoder("opus") == "libopus"
+    assert _resolve_audio_encoder("unknown_audio") == "aac"
+    assert _resolve_audio_encoder(None) == "aac"
+
+
+def test_cut_reencode_video_and_audio(tmp_path: Path):
+    """Verify forced re-encode path handles both video and audio streams seamlessly."""
+    source_clip = generate_clip(
+        5.0, has_video=True, has_audio=True, output_dir=tmp_path
+    )
+    output_clip = tmp_path / "cut_reencode_both.mp4"
+
+    strategy = cut(
+        source_clip,
+        output_clip,
+        start_seconds=1.0,
+        end_seconds=4.0,
+        force_reencode=True,
+    )
+
+    assert strategy == CutStrategy.RE_ENCODE
+    assert output_clip.is_file()
+
+    info = open_and_inspect(output_clip)
+    assert info.has_video is True
+    assert info.has_audio is True
+    assert info.duration is not None
+    assert abs(info.duration - 3.0) <= 0.5
+    assert_playable(output_clip)

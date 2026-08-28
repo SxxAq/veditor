@@ -21,6 +21,40 @@ class CutStrategy(str, Enum):
     RE_ENCODE = "re_encode"
 
 
+DECODER_TO_ENCODER_VIDEO: dict[str, str] = {
+    "h264": "libx264",
+    "hevc": "libx265",
+    "h265": "libx265",
+    "vp8": "libvpx",
+    "vp9": "libvpx-vp9",
+    "av1": "libsvtav1",
+    "mpeg4": "mpeg4",
+}
+
+DECODER_TO_ENCODER_AUDIO: dict[str, str] = {
+    "aac": "aac",
+    "mp3": "libmp3lame",
+    "opus": "libopus",
+    "vorbis": "libvorbis",
+    "flac": "flac",
+    "pcm_s16le": "pcm_s16le",
+}
+
+
+def _resolve_video_encoder(decoder_name: str | None) -> str:
+    """Map a decoder codec name (e.g., 'h264') to an encoder (e.g., 'libx264')."""
+    if not decoder_name:
+        return "libx264"
+    return DECODER_TO_ENCODER_VIDEO.get(decoder_name.lower(), "libx264")
+
+
+def _resolve_audio_encoder(decoder_name: str | None) -> str:
+    """Map an audio decoder codec name to an encoder."""
+    if not decoder_name:
+        return "aac"
+    return DECODER_TO_ENCODER_AUDIO.get(decoder_name.lower(), "aac")
+
+
 def cut(
     input_path: Path | str,
     output_path: Path | str,
@@ -163,9 +197,9 @@ def _cut_reencode(
 
             if video_streams:
                 in_v = video_streams[0]
-                codec_name = in_v.codec_context.name or "libx264"
+                encoder_name = _resolve_video_encoder(in_v.codec_context.name)
                 fps = in_v.average_rate or in_v.guessed_rate or 24
-                out_video = out_container.add_stream(codec_name, rate=fps)
+                out_video = out_container.add_stream(encoder_name, rate=fps)
                 out_video.width = in_v.codec_context.width
                 out_video.height = in_v.codec_context.height
                 out_video.pix_fmt = in_v.codec_context.pix_fmt or "yuv420p"
@@ -175,10 +209,10 @@ def _cut_reencode(
 
             if audio_streams:
                 in_a = audio_streams[0]
-                codec_name = in_a.codec_context.name or "aac"
+                encoder_name = _resolve_audio_encoder(in_a.codec_context.name)
                 sample_rate = in_a.codec_context.sample_rate or 44100
                 channels = in_a.codec_context.channels or 1
-                out_audio = out_container.add_stream(codec_name, rate=sample_rate)
+                out_audio = out_container.add_stream(encoder_name, rate=sample_rate)
                 if in_a.codec_context.layout:
                     out_audio.layout = in_a.codec_context.layout.name
                 elif channels == 2:
