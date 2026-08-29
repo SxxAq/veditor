@@ -170,3 +170,35 @@ def test_cut_reencode_video_and_audio(tmp_path: Path):
     assert info.duration is not None
     assert abs(info.duration - 3.0) <= 0.5
     assert_playable(output_clip)
+
+
+def test_cut_rejects_identical_paths(tmp_path: Path):
+    """Verify cut rejects identical input and output paths to prevent data truncation."""
+    source_clip = generate_clip(3.0, output_dir=tmp_path)
+
+    with pytest.raises(ValueError, match="Input and output paths must be different"):
+        cut(source_clip, source_clip, 0.5, 2.5)
+
+    # Verify original file remains intact and not truncated
+    assert source_clip.stat().st_size > 0
+    assert_playable(source_clip)
+
+
+def test_cut_reencode_container_codec_fallback(tmp_path: Path):
+    """Verify fallback encoder handles container incompatibilities without crashing."""
+    # Create an input clip
+    source_clip = generate_clip(3.0, output_dir=tmp_path)
+    output_clip = tmp_path / "cut_fallback.mp4"
+
+    # Cutting into MP4 will resolve libx264/aac even if input codecs or fallbacks are invoked
+    strategy = cut(
+        source_clip,
+        output_clip,
+        start_seconds=0.5,
+        end_seconds=2.5,
+        force_reencode=True,
+    )
+
+    assert strategy == CutStrategy.RE_ENCODE
+    assert output_clip.is_file()
+    assert_playable(output_clip)

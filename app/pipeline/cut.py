@@ -10,6 +10,7 @@ import logging
 from enum import Enum
 from fractions import Fraction
 from pathlib import Path
+from typing import Any
 
 import av
 
@@ -84,6 +85,11 @@ def cut(
 
     if not in_path.is_file():
         raise FileNotFoundError(f"Input file not found: {in_path}")
+
+    if in_path.resolve() == out_path.resolve():
+        raise ValueError(
+            f"Input and output paths must be different to prevent file truncation: {in_path}"
+        )
 
     if start_seconds < 0:
         raise ValueError(f"start_seconds must be non-negative: {start_seconds}")
@@ -171,6 +177,40 @@ def _cut_stream_copy(
     return CutStrategy.STREAM_COPY
 
 
+def _add_video_stream(
+    container: av.container.OutputContainer,
+    preferred_encoder: str,
+    rate: Any,
+) -> av.stream.Stream:
+    """Add a video stream with preferred encoder, falling back to libx264 if incompatible."""
+    try:
+        return container.add_stream(preferred_encoder, rate=rate)
+    except (ValueError, av.FFmpegError) as exc:
+        logger.warning(
+            "Video encoder '%s' not supported by container (%s); falling back to 'libx264'.",
+            preferred_encoder,
+            exc,
+        )
+        return container.add_stream("libx264", rate=rate)
+
+
+def _add_audio_stream(
+    container: av.container.OutputContainer,
+    preferred_encoder: str,
+    rate: int,
+) -> av.stream.Stream:
+    """Add an audio stream with preferred encoder, falling back to aac if incompatible."""
+    try:
+        return container.add_stream(preferred_encoder, rate=rate)
+    except (ValueError, av.FFmpegError) as exc:
+        logger.warning(
+            "Audio encoder '%s' not supported by container (%s); falling back to 'aac'.",
+            preferred_encoder,
+            exc,
+        )
+        return container.add_stream("aac", rate=rate)
+
+
 def _cut_reencode(
     input_path: str,
     output_path: str,
@@ -199,7 +239,7 @@ def _cut_reencode(
                 in_v = video_streams[0]
                 encoder_name = _resolve_video_encoder(in_v.codec_context.name)
                 fps = in_v.average_rate or in_v.guessed_rate or 24
-                out_video = out_container.add_stream(encoder_name, rate=fps)
+                out_video = _add_video_stream(out_container, encoder_name, rate=fps)
                 out_video.width = in_v.codec_context.width
                 out_video.height = in_v.codec_context.height
                 out_video.pix_fmt = in_v.codec_context.pix_fmt or "yuv420p"
@@ -212,7 +252,9 @@ def _cut_reencode(
                 encoder_name = _resolve_audio_encoder(in_a.codec_context.name)
                 sample_rate = in_a.codec_context.sample_rate or 44100
                 channels = in_a.codec_context.channels or 1
-                out_audio = out_container.add_stream(encoder_name, rate=sample_rate)
+                out_audio = _add_audio_stream(
+                    out_container, encoder_name, rate=sample_rate
+                )
                 if in_a.codec_context.layout:
                     out_audio.layout = in_a.codec_context.layout.name
                 elif channels == 2:
@@ -252,6 +294,14 @@ def _cut_reencode(
                         continue
 
                     if isinstance(frame, av.VideoFrame) and out_video is not None:
+                        if frame.format.name != out_video.pix_fmt:
+                            try:
+                                frame = frame.reformat(format=out_video.pix_fmt)
+                            except (av.FFmpegError, ValueError) as exc:
+                                logger.warning(
+                                    "Frame reformat failed (%s), proceeding without reformat.",
+                                    exc,
+                                )
                         frame.pts = video_frame_count
                         frame.time_base = video_time_base
                         video_frame_count += 1
@@ -265,6 +315,7 @@ def _cut_reencode(
                         for enc_packet in out_audio.encode(frame):
                             out_container.mux(enc_packet)
 
+            # Flush encoders
             if out_video is not None:
                 for enc_packet in out_video.encode():
                     out_container.mux(enc_packet)
