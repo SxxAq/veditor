@@ -152,3 +152,6 @@ def test_normalize_invalid_arguments(tmp_path: Path):
 
     with pytest.raises(ValueError, match="target_lufs must be between"):
         normalize(valid_clip, output_clip, target_lufs=float("inf"))
+
+    with pytest.raises(ValueError, match="Input and output paths must be different"):
+        normalize(valid_clip, valid_clip)

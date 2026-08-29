@@ -51,6 +51,11 @@ def normalize(
     if not in_path.is_file():
         raise FileNotFoundError(f"Input file not found: {in_path}")
 
+    if in_path.resolve() == out_path.resolve():
+        raise ValueError(
+            f"Input and output paths must be different to prevent file truncation: {in_path}"
+        )
+
     if not math.isfinite(target_lufs) or target_lufs > 0 or target_lufs < -70.0:
         raise ValueError(
             f"target_lufs must be between -70.0 and 0.0, got: {target_lufs}"
@@ -117,22 +122,19 @@ def normalize(
                     out_container.mux(packet)
 
                 elif packet.stream.type == "audio":
-                    try:
-                        for frame in packet.decode():
-                            graph.push(frame)
-                            while True:
-                                try:
-                                    out_frame = graph.pull()
-                                except (av.FFmpegError, EOFError) as _:
-                                    break
+                    for frame in packet.decode():
+                        graph.push(frame)
+                        while True:
+                            try:
+                                out_frame = graph.pull()
+                            except (av.FFmpegError, EOFError) as _:
+                                break
 
-                                out_frame.pts = audio_sample_count
-                                out_frame.time_base = Fraction(1, sample_rate)
-                                audio_sample_count += out_frame.samples
-                                for enc_packet in out_audio.encode(out_frame):
-                                    out_container.mux(enc_packet)
-                    except (av.FFmpegError, EOFError) as _:
-                        continue
+                            out_frame.pts = audio_sample_count
+                            out_frame.time_base = Fraction(1, sample_rate)
+                            audio_sample_count += out_frame.samples
+                            for enc_packet in out_audio.encode(out_frame):
+                                out_container.mux(enc_packet)
 
             # Flush filter graph
             graph.push(None)
