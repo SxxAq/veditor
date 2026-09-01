@@ -1,0 +1,169 @@
+{% extends "base.html" %}
+{% block title %}Dashboard{% endblock %}
+
+{% macro status_badge(status) %}
+  {% if status == 'waiting_for_files' %}
+    <span class="badge badge-waiting"><span class="badge-dot"></span>Waiting for files</span>
+  {% elif status == 'pending_approval' %}
+    <span class="badge badge-pending"><span class="badge-dot"></span>Pending Review (Gate 1)</span>
+  {% elif status in ['cutting', 'generating_previews', 'transcoding', 'uploading'] %}
+    <span class="badge badge-processing"><span class="badge-dot"></span>{{ status | replace('_', ' ') | title }}</span>
+  {% elif status == 'preview' %}
+    <span class="badge badge-preview"><span class="badge-dot"></span>Preview Ready (Gate 2)</span>
+  {% elif status == 'needs_work' %}
+    <span class="badge badge-pending"><span class="badge-dot"></span>Needs Work</span>
+  {% elif status == 'done' %}
+    <span class="badge badge-done"><span class="badge-dot"></span>Published</span>
+  {% elif status in ['rejected', 'broken'] %}
+    <span class="badge badge-danger"><span class="badge-dot"></span>{{ status | title }}</span>
+  {% else %}
+    <span class="badge badge-waiting"><span class="badge-dot"></span>{{ status }}</span>
+  {% endif %}
+{% endmacro %}
+
+{% block content %}
+<div class="page-body">
+
+  <!-- Stats Summary Row -->
+  <div class="stats-grid">
+    <div class="stat-card">
+      <span class="stat-label">Total Talks</span>
+      <span class="stat-value">{{ stats.total }}</span>
+    </div>
+    <div class="stat-card">
+      <span class="stat-label">Pending Review</span>
+      <span class="stat-value amber">{{ stats.pending }}</span>
+    </div>
+    <div class="stat-card">
+      <span class="stat-label">Processing</span>
+      <span class="stat-value blue">{{ stats.processing }}</span>
+    </div>
+    <div class="stat-card">
+      <span class="stat-label">Preview Ready</span>
+      <span class="stat-value blue">{{ stats.preview }}</span>
+    </div>
+    <div class="stat-card">
+      <span class="stat-label">Published</span>
+      <span class="stat-value green">{{ stats.done }}</span>
+    </div>
+  </div>
+
+  <!-- Filter Bar -->
+  <div class="filter-bar">
+    <form method="get" action="/ui" style="display:flex;gap:10px;flex-wrap:wrap;width:100%;">
+      <div class="search-wrap">
+        <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+          <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+        </svg>
+        <input
+          id="search-input"
+          class="input-field"
+          type="text"
+          name="q"
+          placeholder="Filter by talk title..."
+          value="{{ q }}"
+          autocomplete="off"
+        >
+      </div>
+
+      <select id="status-select" class="select-field" name="status_filter">
+        <option value="">All Statuses</option>
+        {% for s in all_statuses %}
+          <option value="{{ s }}" {% if s == status_filter %}selected{% endif %}>
+            {{ s | replace('_', ' ') | title }}
+          </option>
+        {% endfor %}
+      </select>
+
+      {% if event_id %}
+        <input type="hidden" name="event_id" value="{{ event_id }}">
+      {% endif %}
+
+      <button class="btn btn-primary" type="submit" id="filter-btn">
+        <svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+          <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46"/>
+        </svg>
+        Filter
+      </button>
+
+      {% if q or status_filter %}
+        <a href="/ui" class="btn btn-ghost" id="clear-btn">Clear</a>
+      {% endif %}
+    </form>
+  </div>
+
+  <!-- Talks Table -->
+  <div class="table-wrap">
+    <div class="table-header">
+      <span class="table-title">Conference Talks</span>
+      <span class="table-count">{{ talks | length }} result{% if talks | length != 1 %}s{% endif %}</span>
+    </div>
+
+    {% if talks %}
+    <table>
+      <thead>
+        <tr>
+          <th>Talk Title</th>
+          <th>Room</th>
+          <th>Start Time</th>
+          <th>End Time</th>
+          <th>Duration</th>
+          <th>Lifecycle Status</th>
+          <th>Action</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for talk in talks %}
+        <tr onclick="window.location='/ui/talks/{{ talk.id }}'" data-talk-id="{{ talk.id }}" data-status="{{ talk.status }}">
+          <td class="td-title">
+            {{ talk.title }}
+            <small>Event #{{ talk.event_id }}</small>
+          </td>
+          <td>{{ talk.room or '—' }}</td>
+          <td class="td-mono">
+            {{ talk.start.strftime('%b %d, %H:%M') if talk.start else '—' }}
+          </td>
+          <td class="td-mono">
+            {{ talk.end.strftime('%H:%M') if talk.end else '—' }}
+          </td>
+          <td class="td-mono">
+            {% if talk.start and talk.end %}
+              {% set secs = (talk.end - talk.start).total_seconds() | int %}
+              {% set h = secs // 3600 %}{% set m = (secs % 3600) // 60 %}{% set s = secs % 60 %}
+              {{ '%d:%02d:%02d' | format(h, m, s) }}
+            {% else %}
+              —
+            {% endif %}
+          </td>
+          <td class="status-cell" data-talk-id="{{ talk.id }}">
+            {{ status_badge(talk.status) }}
+          </td>
+          <td>
+            <a href="/ui/talks/{{ talk.id }}" class="btn btn-ghost btn-sm" onclick="event.stopPropagation()">
+              Open Studio
+            </a>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <div style="padding:48px 24px;text-align:center;color:var(--v-text-muted);">
+      <p style="font-size:0.95rem;font-weight:500;margin-bottom:6px;">No talks found</p>
+      <p style="font-size:0.82rem;">
+        {% if q or status_filter %}
+          No talks match your current filters. <a href="/ui">Clear filters</a>
+        {% else %}
+          No talks ingested yet. Use the REST API or run the seed script.
+        {% endif %}
+      </p>
+    </div>
+    {% endif %}
+  </div>
+
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script src="/static/js/dashboard.js"></script>
+{% endblock %}
