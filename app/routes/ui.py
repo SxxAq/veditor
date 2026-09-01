@@ -37,7 +37,9 @@ router = APIRouter(prefix="/ui", tags=["ui"])
 
 ALL_STATUSES = [
     "waiting_for_files",
+    "detecting",
     "pending_approval",
+    "pending_bounds",
     "cutting",
     "generating_previews",
     "preview",
@@ -74,7 +76,9 @@ MILESTONES_DEF = [
 
 STAGE_MILESTONE_MAP = {
     "waiting_for_files": 0,
+    "detecting": 0,
     "pending_approval": 1,
+    "pending_bounds": 1,
     "rejected": 1,
     "cutting": 2,
     "generating_previews": 2,
