@@ -69,10 +69,36 @@ function parseTimecode(str) {
 // ── Video Loading ───────────────────────────────────────────────
 window.loadVideoSrc = function(url) {
   if (!video) return;
+  video.pause();
   video.src = url;
   video.style.display = 'block';
   if (noPreview) noPreview.style.display = 'none';
   video.load();
+  video.currentTime = 0;
+  video.play().catch(() => {});
+
+  // Highlight active row in Generated Media Assets
+  document.querySelectorAll('.media-asset-row').forEach(row => {
+    const rowUrl = row.getAttribute('data-asset-url');
+    const btn = row.querySelector('.btn-play-asset');
+    if (rowUrl === url) {
+      row.style.borderColor = 'var(--v-primary)';
+      row.style.background = 'var(--v-primary-subtle)';
+      if (btn) {
+        btn.textContent = 'Active in Studio';
+        btn.classList.remove('btn-ghost');
+        btn.classList.add('btn-primary');
+      }
+    } else {
+      row.style.borderColor = 'var(--v-border-subtle)';
+      row.style.background = 'var(--v-bg-subtle)';
+      if (btn) {
+        btn.textContent = 'Play in Studio';
+        btn.classList.remove('btn-primary');
+        btn.classList.add('btn-ghost');
+      }
+    }
+  });
 };
 
 function initInitialVideo() {
@@ -334,7 +360,8 @@ async function postUI(path, body = {}) {
 window.approveTalk = async function(id) {
   const notes = (document.getElementById('review-notes-input') || {}).value || '';
   const btn = document.getElementById('btn-approve');
-  if (btn) { btn.disabled = true; btn.textContent = 'Processing Pipeline...'; }
+  const originalHtml = btn ? btn.innerHTML : '';
+  if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spinner spinner-sm"></span> Processing Pipeline...'; }
   try {
     await postUI(`/ui/talks/${id}/approve`, {
       decision: 'approved',
@@ -345,27 +372,35 @@ window.approveTalk = async function(id) {
     location.reload();
   } catch (err) {
     alert(`Pipeline execution failed: ${err.message}`);
-    if (btn) { btn.disabled = false; btn.textContent = 'Approve'; }
+    if (btn) { btn.disabled = false; btn.innerHTML = originalHtml; }
   }
 };
 
 window.rejectTalk = async function(id) {
   const notes = (document.getElementById('review-notes-input') || {}).value || '';
   if (!confirm('Reject this talk bounds?')) return;
+  const btn = document.getElementById('btn-reject');
+  const originalHtml = btn ? btn.innerHTML : '';
+  if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spinner spinner-sm"></span> Rejecting...'; }
   try {
     await postUI(`/ui/talks/${id}/reject`, { decision: 'rejected', note: notes || 'Rejected in review studio' });
     location.reload();
   } catch (err) {
     alert(`Rejection failed: ${err.message}`);
+    if (btn) { btn.disabled = false; btn.innerHTML = originalHtml; }
   }
 };
 
 window.retryTalk = async function(id) {
+  const btn = document.getElementById('btn-retry');
+  const originalHtml = btn ? btn.innerHTML : '';
+  if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spinner spinner-sm"></span> Resetting...'; }
   try {
     await postUI(`/ui/talks/${id}/retry`);
     location.reload();
   } catch (err) {
     alert(`Retry failed: ${err.message}`);
+    if (btn) { btn.disabled = false; btn.innerHTML = originalHtml; }
   }
 };
 
@@ -378,33 +413,67 @@ window.setTalkStatus = async function(id, newStatus) {
   }
 };
 
-window.applyStatusOverride = async function(id) {
-  const sel = document.getElementById('select-status-override');
-  if (sel) {
-    await setTalkStatus(id, sel.value);
-  }
-};
+window.handleVideoFileUpload = async function(e, talkId) {
+  const file = e.target.files ? e.target.files[0] : (e.dataTransfer ? e.dataTransfer.files[0] : null);
+  if (!file) return;
 
-window.generateDemoClip = async function(id) {
-  const btn = document.getElementById('btn-gen-clip');
-  if (btn) { btn.disabled = true; btn.textContent = 'Rendering Pipeline...'; }
+  const progressWrap = document.getElementById('upload-progress-wrap');
+  const progressText = document.getElementById('upload-progress-text');
+  if (progressWrap) progressWrap.style.display = 'block';
+  if (progressText) progressText.textContent = `Uploading "${file.name}" and validating streams...`;
+
   try {
-    const data = await postUI(`/ui/talks/${id}/generate-preview`);
-    if (data.url) {
-      window.loadVideoSrc(data.url);
-      location.reload();
-    } else {
-      location.reload();
+    const fd = new FormData();
+    fd.append('file', file);
+
+    const res = await fetch(`/ui/talks/${talkId}/upload-recording`, {
+      method: 'POST',
+      body: fd,
+    });
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `Upload failed with status ${res.status}`);
     }
+
+    const data = await res.json();
+    location.reload();
   } catch (err) {
-    alert(`Pipeline generation failed: ${err.message}`);
-  } finally {
-    if (btn) { btn.disabled = false; btn.textContent = 'Run Full Pipeline'; }
+    alert(`Video upload failed: ${err.message}`);
+    if (progressWrap) progressWrap.style.display = 'none';
   }
 };
 
-// ── Initial Setup ───────────────────────────────────────────────
+// ── Initial Setup & Drag-and-Drop ───────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
   initInitialVideo();
   updateCutMarkersUI();
+
+  const dropzone = document.getElementById('no-preview-msg');
+  if (dropzone) {
+    ['dragenter', 'dragover'].forEach(name => {
+      dropzone.addEventListener(name, (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        dropzone.style.borderColor = 'var(--v-primary)';
+        dropzone.style.background = 'var(--v-primary-subtle)';
+      });
+    });
+
+    ['dragleave', 'drop'].forEach(name => {
+      dropzone.addEventListener(name, (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        dropzone.style.borderColor = 'var(--v-border)';
+        dropzone.style.background = '';
+      });
+    });
+
+    dropzone.addEventListener('drop', (e) => {
+      const talkId = window.location.pathname.split('/').filter(Boolean).pop();
+      if (talkId) {
+        window.handleVideoFileUpload(e, parseInt(talkId, 10));
+      }
+    });
+  }
 });

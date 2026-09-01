@@ -1,11 +1,19 @@
-from __future__ import annotations
-
+import json
 import tempfile
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Annotated
 
 import jinja2
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Request,
+    UploadFile,
+)
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
@@ -189,26 +197,80 @@ def _execute_full_processing_pipeline(
         db.add(job)
 
 
+def _concat_clips(
+    clip_paths: list[Path], output_path: Path, target_resolution=(1280, 720), fps=25
+) -> None:
+    """Concatenates intro + talk + outro clips into a single video."""
+    import av
+
+    with av.open(
+        str(output_path), mode="w", options={"movflags": "faststart"}
+    ) as out_container:
+        v_stream = out_container.add_stream("libx264", rate=fps, options={"crf": "22"})
+        v_stream.width, v_stream.height = target_resolution
+        v_stream.pix_fmt = "yuv420p"
+
+        a_stream = out_container.add_stream("aac", rate=48000)
+        a_stream.layout = "stereo"
+        resampler = av.AudioResampler(format="s16p", layout="stereo", rate=48000)
+
+        for clip in clip_paths:
+            if not clip.exists():
+                continue
+            with av.open(str(clip)) as in_container:
+                if in_container.streams.video:
+                    for frame in in_container.decode(in_container.streams.video[0]):
+                        img = frame.to_image().resize(target_resolution)
+                        new_frame = av.VideoFrame.from_image(img)
+                        for packet in v_stream.encode(new_frame):
+                            out_container.mux(packet)
+                if in_container.streams.audio:
+                    for frame in in_container.decode(in_container.streams.audio[0]):
+                        for resampled in resampler.resample(frame):
+                            for packet in a_stream.encode(resampled):
+                                out_container.mux(packet)
+
+        for resampled in resampler.resample(None):
+            for packet in a_stream.encode(resampled):
+                out_container.mux(packet)
+        for packet in v_stream.encode():
+            out_container.mux(packet)
+        for packet in a_stream.encode():
+            out_container.mux(packet)
+
+
 def _execute_master_transcode_pipeline(
     talk: models.Talk, storage: StorageBackend, db: Session
 ) -> None:
-    """Executes final master transcode and publish."""
+    """Executes final master transcode with attached Intro & Outro slates and publishes."""
     talk_id = talk.id
     cut_key = f"{talk_id}/cut/cut.mp4"
+    intro_key = f"{talk_id}/intro/intro.mp4"
+    outro_key = f"{talk_id}/outro/outro.mp4"
+
     if not storage.exists(cut_key):
         _execute_full_processing_pipeline(talk, storage, db)
 
-    # Transcode presets
+    # Assemble [intro, cut, outro] and transcode
     with tempfile.TemporaryDirectory() as tmpdir:
+        composite_tmp = Path(tmpdir) / "composite.mp4"
         final_tmp = Path(tmpdir) / "final.mp4"
-        transcode(storage.get(cut_key), final_tmp, preset=PRESET_720P)
-        storage.put(f"{talk_id}/final/final.mp4", final_tmp)
 
-    # Publish
-    with tempfile.TemporaryDirectory() as tmpdir:
-        meta_tmp = Path(tmpdir) / "publish.json"
-        publish(storage.get(f"{talk_id}/final/final.mp4"), meta_tmp)
-        storage.put(f"{talk_id}/publish/metadata.json", meta_tmp)
+        clips_to_join = []
+        if storage.exists(intro_key):
+            clips_to_join.append(storage.get(intro_key))
+        if storage.exists(cut_key):
+            clips_to_join.append(storage.get(cut_key))
+        if storage.exists(outro_key):
+            clips_to_join.append(storage.get(outro_key))
+
+        if clips_to_join:
+            _concat_clips(clips_to_join, composite_tmp)
+            transcode(composite_tmp, final_tmp, preset=PRESET_720P)
+        else:
+            transcode(storage.get(cut_key), final_tmp, preset=PRESET_720P)
+
+        publish(final_tmp, talk_id, storage)
 
     for kind in ("transcode", "publish"):
         job = models.Job(
@@ -240,6 +302,7 @@ def dashboard(
         talks = [t for t in talks if q_lower in t.title.lower()]
 
     all_talks = db.query(models.Talk).all()
+    all_rooms = sorted({t.room for t in all_talks if t.room})
     stats = {
         "total": len(all_talks),
         "pending": sum(1 for t in all_talks if t.status == "pending_approval"),
@@ -261,6 +324,7 @@ def dashboard(
             "talks": talks,
             "stats": stats,
             "all_statuses": ALL_STATUSES,
+            "all_rooms": all_rooms,
             "q": q or "",
             "status_filter": status_filter or "",
             "event_id": event_id,
@@ -276,6 +340,7 @@ def get_talk_media_default(
 ):
     candidate_keys = [
         f"{talk_id}/preview/{filename}",
+        f"{talk_id}/raw/{filename}",
         f"{talk_id}/intro/{filename}",
         f"{talk_id}/outro/{filename}",
         f"{talk_id}/cut/{filename}",
@@ -328,20 +393,40 @@ def studio(
     # Build categorized media assets that can be watched in the studio
     asset_defs = [
         ("preview", "preview.mp4", "Preview Video"),
+        ("raw", "raw.mp4", "Raw Recording"),
         ("intro", "intro.mp4", "Opening Title Slate"),
         ("outro", "outro.mp4", "Outro Slate"),
         ("cut", "cut.mp4", "Cut Talk Clip"),
         ("final", "final.mp4", "Master Video (Final)"),
     ]
     media_assets = []
+    seen_urls = set()
+
     for cat, fname, label in asset_defs:
         key = f"{talk.id}/{cat}/{fname}"
         if storage.exists(key):
+            url = f"/ui/media/{talk.id}/{cat}/{fname}"
+            if url not in seen_urls:
+                seen_urls.add(url)
+                media_assets.append(
+                    {
+                        "label": label,
+                        "category": cat,
+                        "url": url,
+                    }
+                )
+
+    # Check for any dynamic raw filenames
+    for rk in storage.list_keys(f"{talk.id}/raw"):
+        fname = Path(rk).name
+        url = f"/ui/media/{talk.id}/raw/{fname}"
+        if url not in seen_urls:
+            seen_urls.add(url)
             media_assets.append(
                 {
-                    "label": label,
-                    "category": cat,
-                    "url": f"/ui/media/{talk.id}/{cat}/{fname}",
+                    "label": "Raw Recording",
+                    "category": "raw",
+                    "url": url,
                 }
             )
 
@@ -479,16 +564,21 @@ def reject_talk(
 def retry_talk(
     talk_id: int,
     db: Annotated[Session, Depends(get_db)],
+    storage: Annotated[StorageBackend, Depends(get_storage_backend)],
 ):
     talk = db.query(models.Talk).filter(models.Talk.id == talk_id).first()
     if not talk:
         raise HTTPException(status_code=404, detail="Talk not found")
 
+    # Clean up stale derived artifacts while preserving the raw recording in raw/
+    for derived_stage in ("cut", "intro", "outro", "preview", "final", "publish"):
+        storage.delete(f"{talk_id}/{derived_stage}")
+
     talk.status = "pending_approval"
     db.commit()
     return {
         "status": "ok",
-        "message": "Reset to pending_approval",
+        "message": "Reset to pending_approval and cleared derived artifacts",
         "talk_status": talk.status,
     }
 
@@ -531,3 +621,255 @@ def edit_talk(
 
     db.commit()
     return {"status": "ok", "title": talk.title, "room": talk.room}
+
+
+@router.post("/schedule/import")
+async def import_schedule(
+    request: Request,
+    db: Annotated[Session, Depends(get_db)],
+    file: Annotated[UploadFile | None, File()] = None,
+):
+    data = None
+    if file and file.filename:
+        content = await file.read()
+        data = json.loads(content.decode("utf-8"))
+    else:
+        body = await request.json()
+        data = body.get("schedule") or body
+
+    if not data:
+        raise HTTPException(status_code=400, detail="Empty schedule data")
+
+    event_name = "Conference Event"
+    talks_to_create = []
+
+    if isinstance(data, dict):
+        if "schedule" in data and "conference" in data["schedule"]:
+            conf = data["schedule"]["conference"]
+            event_name = conf.get("title") or event_name
+            for day in conf.get("days", []):
+                for room_name, room_talks in day.get("rooms", {}).items():
+                    for t in room_talks:
+                        talks_to_create.append(
+                            {
+                                "title": t.get("title", "Untitled Session"),
+                                "room": room_name,
+                            }
+                        )
+        elif "talks" in data:
+            event_name = data.get("event_name") or event_name
+            talks_to_create = data["talks"]
+        elif "title" in data:
+            talks_to_create = [data]
+    elif isinstance(data, list):
+        talks_to_create = data
+
+    event = db.query(models.Event).filter(models.Event.name == event_name).first()
+    if not event:
+        event = models.Event(name=event_name)
+        db.add(event)
+        db.commit()
+        db.refresh(event)
+
+    created_count = 0
+    now = datetime.now(UTC)
+    for t_info in talks_to_create:
+        title = t_info.get("title") or "Untitled Talk"
+        room = t_info.get("room") or "Main Hall"
+        talk = models.Talk(
+            event_id=event.id,
+            title=title,
+            room=room,
+            start=now + timedelta(minutes=created_count * 45),
+            end=now + timedelta(minutes=(created_count + 1) * 45),
+            status="waiting_for_files",
+        )
+        db.add(talk)
+        created_count += 1
+
+    db.commit()
+    return {
+        "status": "ok",
+        "event_id": event.id,
+        "event_name": event.name,
+        "imported_count": created_count,
+    }
+
+
+@router.post("/talks/create")
+async def create_single_talk(
+    request: Request,
+    db: Annotated[Session, Depends(get_db)],
+):
+    body = await request.json()
+    event_name = (body.get("event_name") or "").strip() or "General Event"
+    title = (body.get("title") or "").strip() or "Untitled Session"
+    room = (body.get("room") or "").strip() or "Room 1"
+
+    event = db.query(models.Event).filter(models.Event.name == event_name).first()
+    if not event:
+        event = models.Event(name=event_name)
+        db.add(event)
+        db.commit()
+        db.refresh(event)
+
+    now = datetime.now(UTC)
+    talk = models.Talk(
+        event_id=event.id,
+        title=title,
+        room=room,
+        start=now,
+        end=now + timedelta(minutes=45),
+        status="waiting_for_files",
+    )
+    db.add(talk)
+    db.commit()
+    db.refresh(talk)
+    return {"status": "ok", "talk_id": talk.id}
+
+
+@router.post("/talks/{talk_id}/upload-recording")
+async def upload_talk_recording(
+    talk_id: int,
+    file: Annotated[UploadFile, File()],
+    db: Annotated[Session, Depends(get_db)],
+    storage: Annotated[StorageBackend, Depends(get_storage_backend)],
+):
+    import av
+
+    talk = db.query(models.Talk).filter(models.Talk.id == talk_id).first()
+    if not talk:
+        raise HTTPException(status_code=404, detail="Talk not found")
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp_path = Path(tmpdir) / (file.filename or "recording.mp4")
+        content = await file.read()
+        # storage-boundary-exempt: upload staging
+        tmp_path.write_bytes(content)
+
+        try:
+            with av.open(str(tmp_path)) as container:
+                if not container.streams.video:
+                    raise ValueError("File contains no video stream")
+                duration = float(container.duration) / av.time_base
+        except Exception as exc:
+            raise HTTPException(
+                status_code=400, detail=f"Invalid video file: {exc}"
+            ) from exc
+
+        raw_key = f"{talk_id}/raw/raw.mp4"
+        storage.put(raw_key, tmp_path)
+
+    talk.status = "pending_approval"
+    talk.cut_start = 0.0
+    talk.cut_end = duration
+    talk.raw_duration_seconds = duration
+    db.commit()
+
+    return {
+        "status": "ok",
+        "talk_status": talk.status,
+        "url": f"/ui/media/{talk_id}/raw/raw.mp4",
+        "duration": duration,
+    }
+
+
+@router.post("/room/attach-recording")
+async def attach_room_recording(
+    room: Annotated[str, Form()],
+    file: Annotated[UploadFile, File()],
+    db: Annotated[Session, Depends(get_db)],
+    storage: Annotated[StorageBackend, Depends(get_storage_backend)],
+    event_id: Annotated[int | None, Form()] = None,
+):
+    import av
+
+    room_clean = room.strip()
+    query = db.query(models.Talk).filter(models.Talk.room == room_clean)
+    if event_id is not None:
+        query = query.filter(models.Talk.event_id == event_id)
+
+    talks_in_room = query.all()
+    if not talks_in_room:
+        raise HTTPException(
+            status_code=404, detail=f"No talks found in room '{room_clean}'"
+        )
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp_path = Path(tmpdir) / (file.filename or "room_recording.mp4")
+        content = await file.read()
+        # storage-boundary-exempt: upload staging
+        tmp_path.write_bytes(content)
+
+        try:
+            with av.open(str(tmp_path)) as container:
+                if not container.streams.video:
+                    raise ValueError("Uploaded file contains no video stream")
+                duration = float(container.duration) / av.time_base
+        except Exception as exc:
+            raise HTTPException(
+                status_code=400, detail=f"Invalid video file: {exc}"
+            ) from exc
+
+        for talk in talks_in_room:
+            raw_key = f"{talk.id}/raw/raw.mp4"
+            storage.put(raw_key, tmp_path)
+            talk.status = "pending_approval"
+            talk.cut_start = 0.0
+            talk.cut_end = duration
+            talk.raw_duration_seconds = duration
+
+    db.commit()
+    return {
+        "status": "ok",
+        "room": room_clean,
+        "attached_count": len(talks_in_room),
+        "talk_ids": [t.id for t in talks_in_room],
+    }
+
+
+class BulkDeleteRequest(BaseModel):
+    talk_ids: list[int]
+
+
+@router.post("/talks/{talk_id}/delete")
+def delete_talk(
+    talk_id: int,
+    db: Annotated[Session, Depends(get_db)],
+    storage: Annotated[StorageBackend, Depends(get_storage_backend)],
+):
+    talk = db.query(models.Talk).filter(models.Talk.id == talk_id).first()
+    if not talk:
+        raise HTTPException(status_code=404, detail="Talk not found")
+
+    storage.delete(f"{talk_id}")
+    db.query(models.Review).filter(models.Review.talk_id == talk_id).delete()
+    db.query(models.Job).filter(models.Job.talk_id == talk_id).delete()
+    db.delete(talk)
+    db.commit()
+
+    return {"status": "ok", "deleted_id": talk_id}
+
+
+@router.post("/talks/bulk-delete")
+def bulk_delete_talks(
+    payload: BulkDeleteRequest,
+    db: Annotated[Session, Depends(get_db)],
+    storage: Annotated[StorageBackend, Depends(get_storage_backend)],
+):
+    if not payload.talk_ids:
+        return {"status": "ok", "deleted_count": 0}
+
+    for tid in payload.talk_ids:
+        storage.delete(f"{tid}")
+        db.query(models.Review).filter(models.Review.talk_id == tid).delete()
+        db.query(models.Job).filter(models.Job.talk_id == tid).delete()
+
+    deleted_count = (
+        db.query(models.Talk)
+        .filter(models.Talk.id.in_(payload.talk_ids))
+        .delete(synchronize_session=False)
+    )
+    db.commit()
+
+    return {"status": "ok", "deleted_count": deleted_count}
