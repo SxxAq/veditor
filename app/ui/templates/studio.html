@@ -2,12 +2,14 @@
 {% block title %}{{ talk.title[:40] }}{% endblock %}
 
 {% macro status_badge(status) %}
-  {% if status in ['waiting_for_files', 'detecting'] %}
-    <span class="badge badge-waiting"><span class="badge-dot"></span>{{ status | replace('_', ' ') | title }}</span>
+  {% if status == 'waiting_for_files' %}
+    <span class="badge badge-waiting"><span class="badge-dot"></span>Waiting for files</span>
+  {% elif status == 'detecting' %}
+    <span class="badge badge-processing"><span class="spinner spinner-sm"></span>Detecting</span>
   {% elif status in ['pending_approval', 'pending_bounds'] %}
     <span class="badge badge-pending"><span class="badge-dot"></span>Pending Review (Gate 1)</span>
   {% elif status in ['cutting', 'generating_previews', 'transcoding', 'uploading'] %}
-    <span class="badge badge-processing"><span class="badge-dot"></span>{{ status | replace('_', ' ') | title }}</span>
+    <span class="badge badge-processing"><span class="spinner spinner-sm"></span>{{ status | replace('_', ' ') | title }}</span>
   {% elif status == 'preview' %}
     <span class="badge badge-preview"><span class="badge-dot"></span>Preview Ready (Gate 2)</span>
   {% elif status == 'needs_work' %}
@@ -91,9 +93,34 @@
 
       <div class="divider"></div>
 
-      <div class="meta-group">
-        <div class="meta-label">Current Lifecycle State</div>
-        <div style="margin-top:6px;">{{ status_badge(talk.status) }}</div>
+      <!-- Generated Media Assets (RAW, Intro, Outro, Preview, Final) -->
+      <div style="font-size:0.72rem;font-weight:600;text-transform:uppercase;letter-spacing:0.07em;color:var(--v-text-muted);margin-bottom:8px;">
+        Generated Media Assets
+      </div>
+
+      <div id="media-assets-list" style="display:flex;flex-direction:column;gap:6px;">
+        {% if media_assets %}
+          {% for asset in media_assets %}
+          <div class="media-asset-row" data-asset-url="{{ asset.url }}" style="display:flex;flex-direction:column;gap:6px;padding:8px 10px;background:var(--v-bg-subtle);border:1px solid var(--v-border-subtle);border-radius:var(--v-radius-xs);transition:all 0.15s ease;">
+            <div style="display:flex;align-items:center;justify-content:space-between;">
+              <span class="badge {% if asset.category == 'intro' or asset.category == 'outro' %}badge-pending{% elif asset.category == 'final' %}badge-done{% elif asset.category == 'raw' %}badge-waiting{% else %}badge-preview{% endif %}" style="font-size:0.65rem;padding:1px 5px;">
+                {{ asset.category | upper }}
+              </span>
+              <a href="{{ asset.url }}" target="_blank" class="btn btn-ghost btn-sm" style="padding:1px 6px;font-size:0.68rem;" title="Download file">
+                Download
+              </a>
+            </div>
+            <div style="font-size:0.78rem;font-weight:500;color:var(--v-text-primary);line-height:1.2;">
+              {{ asset.label }}
+            </div>
+            <button onclick="loadVideoSrc('{{ asset.url }}')" class="btn btn-primary btn-sm btn-play-asset" style="width:100%;padding:3px 8px;font-size:0.72rem;margin-top:2px;">
+              Play in Studio
+            </button>
+          </div>
+          {% endfor %}
+        {% else %}
+          <div style="font-size:0.75rem;color:var(--v-text-muted);">No pipeline media generated yet.</div>
+        {% endif %}
       </div>
 
     </div>
@@ -104,24 +131,29 @@
 
     <!-- Video Viewport -->
     <div class="player-viewport">
-      <video id="main-video" preload="metadata" style="width:100%;max-height:360px;background:#000;display:none;">
+      <video id="main-video" preload="metadata" style="width:100%;max-height:420px;background:#000;display:none;">
         Your browser does not support HTML5 video.
       </video>
-      <div class="player-no-preview" id="no-preview-msg">
-        <svg width="44" height="44" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
-          <rect x="2" y="2" width="20" height="20" rx="2.18" ry="2.18"/>
-          <line x1="7" y1="2" x2="7" y2="22"/>
-          <line x1="17" y1="2" x2="17" y2="22"/>
-          <line x1="2" y1="12" x2="22" y2="12"/>
-          <line x1="2" y1="7" x2="7" y2="7"/>
-          <line x1="2" y1="17" x2="7" y2="17"/>
-          <line x1="17" y1="17" x2="22" y2="17"/>
-          <line x1="17" y1="7" x2="22" y2="7"/>
+      <div class="player-no-preview" id="no-preview-msg" style="cursor:pointer;padding:36px 20px;" onclick="document.getElementById('video-file-input').click()">
+        <input type="file" id="video-file-input" accept="video/mp4,video/mkv,video/webm,video/quicktime,video/*" style="display:none;" onchange="handleVideoFileUpload(event, {{ talk.id }})">
+        <svg width="44" height="44" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24" style="color:var(--v-primary);margin-bottom:8px;">
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+          <polyline points="17 8 12 3 7 8"/>
+          <line x1="12" y1="3" x2="12" y2="15"/>
         </svg>
-        <span style="font-size:0.85rem;font-weight:500;">No preview clip loaded</span>
-        <span style="font-size:0.75rem;color:var(--v-text-muted);">
-          Click "Run Processing Pipeline" below to render the real title slates, cut, and preview video
+        <span style="font-size:0.95rem;font-weight:600;color:var(--v-text-primary);margin-bottom:4px;">
+          Attach Recording Video
         </span>
+        <span style="font-size:0.76rem;color:var(--v-text-muted);max-width:320px;margin-bottom:12px;text-align:center;">
+          Drag & drop raw conference video file here, or click to browse (MP4, MKV, MOV, WebM).
+        </span>
+        <button class="btn btn-primary btn-sm" onclick="event.stopPropagation(); document.getElementById('video-file-input').click();">
+          Browse Video File
+        </button>
+        <div id="upload-progress-wrap" style="display:none;margin-top:12px;text-align:center;">
+          <span class="spinner spinner-sm" style="margin-right:6px;"></span>
+          <span style="font-size:0.75rem;color:var(--v-text-muted);" id="upload-progress-text">Uploading & validating video streams...</span>
+        </div>
       </div>
     </div>
 
@@ -221,38 +253,6 @@
       </div>
     </div>
 
-    <!-- Generated Media Assets (Intro, Outro, Preview, Final) -->
-    <div style="padding:14px 16px;border-top:1px solid var(--v-border-subtle);flex:1;overflow-y:auto;">
-      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
-        <span style="font-size:0.75rem;font-weight:600;text-transform:uppercase;letter-spacing:0.07em;color:var(--v-text-muted);">Generated Media Assets</span>
-        <button class="btn btn-primary btn-sm" onclick="generateDemoClip({{ talk.id }})" id="btn-gen-clip">
-          <svg width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
-          Run Full Pipeline
-        </button>
-      </div>
-
-      <div id="media-assets-list">
-        {% if media_assets %}
-          {% for asset in media_assets %}
-          <div style="display:flex;align-items:center;justify-content:space-between;padding:7px 12px;background:var(--v-bg-subtle);border:1px solid var(--v-border-subtle);border-radius:var(--v-radius-xs);margin-bottom:6px;font-size:0.8rem;">
-            <div style="display:flex;align-items:center;gap:8px;">
-              <span class="badge {% if asset.category == 'intro' or asset.category == 'outro' %}badge-pending{% elif asset.category == 'final' %}badge-done{% else %}badge-preview{% endif %}" style="font-size:0.68rem;padding:2px 6px;">
-                {{ asset.category | upper }}
-              </span>
-              <span style="font-weight:500;color:var(--v-text-primary);">{{ asset.label }}</span>
-            </div>
-            <div style="display:flex;align-items:center;gap:6px;">
-              <a href="{{ asset.url }}" target="_blank" class="btn btn-ghost btn-sm" style="padding:2px 8px;font-size:0.72rem;">Download</a>
-              <button onclick="loadVideoSrc('{{ asset.url }}')" class="btn btn-primary btn-sm" style="padding:2px 10px;font-size:0.72rem;">Play in Studio</button>
-            </div>
-          </div>
-          {% endfor %}
-        {% else %}
-          <div style="font-size:0.78rem;color:var(--v-text-muted);">No pipeline media rendered yet. Click "Run Full Pipeline" to generate intro/outro and preview clips.</div>
-        {% endif %}
-      </div>
-    </div>
-
   </div>
 
   <!-- ── RIGHT: 4 Milestones & Review Actions ────────────────── -->
@@ -278,7 +278,14 @@
         </div>
 
         <div class="action-btns" id="action-btns" style="display:flex;flex-direction:column;gap:6px;">
-          {% if talk.status in ['pending_approval', 'waiting_for_files', 'needs_work'] %}
+          {% if talk.status == 'needs_work' %}
+            <button class="btn btn-primary w-full" id="btn-approve" onclick="approveTalk({{ talk.id }})">
+              Re-cut Timestamps & Regenerate Preview
+            </button>
+            <button class="btn btn-danger w-full" id="btn-reject" onclick="rejectTalk({{ talk.id }})">
+              Reject Talk
+            </button>
+          {% elif talk.status in ['pending_approval', 'waiting_for_files', 'pending_bounds'] %}
             <button class="btn btn-success w-full" id="btn-approve" onclick="approveTalk({{ talk.id }})">
               Approve Timestamps (Start Processing)
             </button>
@@ -306,21 +313,6 @@
             </button>
           {% endif %}
         </div>
-
-        <div class="divider" style="margin:12px 0;"></div>
-
-        <!-- Pipeline Override Dropdown -->
-        <div>
-          <label for="select-status-override" style="font-size:0.7rem;color:var(--v-text-muted);display:block;margin-bottom:3px;">Stage Simulator</label>
-          <div style="display:flex;gap:4px;">
-            <select id="select-status-override" class="select-field" style="flex:1;font-size:0.75rem;padding:3px 6px;">
-              {% for s in all_statuses %}
-                <option value="{{ s }}" {% if s == talk.status %}selected{% endif %}>{{ s | replace('_', ' ') | title }}</option>
-              {% endfor %}
-            </select>
-            <button class="btn btn-ghost btn-sm" onclick="applyStatusOverride({{ talk.id }})">Set</button>
-          </div>
-        </div>
       </div>
 
       <!-- 4 Lifecycle Milestones -->
@@ -335,7 +327,7 @@
                 {% if m.state == 'completed' %}✓{% else %}{{ m.num }}.{% endif %} {{ m.title }}
               </span>
               {% if m.state == 'active' %}
-                <span class="badge badge-processing" style="font-size:0.65rem;padding:1px 5px;">In Progress</span>
+                <span class="badge badge-processing" style="font-size:0.65rem;padding:1px 5px;"><span class="spinner spinner-sm"></span>In Progress</span>
               {% elif m.state == 'completed' %}
                 <span class="badge badge-done" style="font-size:0.65rem;padding:1px 5px;">Done</span>
               {% elif m.state == 'failed' %}
@@ -361,7 +353,7 @@
         <div style="display:flex;align-items:center;justify-content:space-between;padding:6px 10px;background:var(--v-bg-subtle);border:1px solid var(--v-border-subtle);border-radius:var(--v-radius-xs);font-size:0.75rem;">
           <span style="font-family:var(--v-font-mono);">{{ job.kind }}</span>
           <span class="badge {% if job.status == 'done' or job.status == 'success' %}badge-done{% elif job.status == 'running' %}badge-processing{% elif job.status == 'failed' %}badge-danger{% else %}badge-waiting{% endif %}" style="font-size:0.65rem;padding:1px 5px;">
-            {{ job.status }}
+            {% if job.status == 'running' %}<span class="spinner spinner-sm"></span>{% endif %}{{ job.status }}
           </span>
         </div>
         {% endfor %}
