@@ -2,9 +2,9 @@
 {% block title %}{{ talk.title[:40] }}{% endblock %}
 
 {% macro status_badge(status) %}
-  {% if status == 'waiting_for_files' %}
-    <span class="badge badge-waiting"><span class="badge-dot"></span>Waiting for files</span>
-  {% elif status == 'pending_approval' %}
+  {% if status in ['waiting_for_files', 'detecting'] %}
+    <span class="badge badge-waiting"><span class="badge-dot"></span>{{ status | replace('_', ' ') | title }}</span>
+  {% elif status in ['pending_approval', 'pending_bounds'] %}
     <span class="badge badge-pending"><span class="badge-dot"></span>Pending Review (Gate 1)</span>
   {% elif status in ['cutting', 'generating_previews', 'transcoding', 'uploading'] %}
     <span class="badge badge-processing"><span class="badge-dot"></span>{{ status | replace('_', ' ') | title }}</span>
