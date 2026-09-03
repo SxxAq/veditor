@@ -384,12 +384,12 @@ def job_transcode(
 
         def _on_progress(pct: float) -> None:
             now = time.monotonic()
-            if pct >= 1.0 or (now - last_update_time[0]) >= progress_throttle_s:
+            if 0.0 <= pct < 1.0 and (now - last_update_time[0]) >= progress_throttle_s:
                 last_update_time[0] = now
                 try:
                     with SessionLocal() as progress_db:
                         j = progress_db.get(Job, job_id)
-                        if j:
+                        if j and j.status == "running":
                             j.progress_pct = round(pct * 100.0, 2)
                             progress_db.commit()
                 except Exception as progress_err:  # noqa: BLE001

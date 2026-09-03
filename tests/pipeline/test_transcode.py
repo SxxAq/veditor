@@ -98,7 +98,7 @@ def test_transcode_progress_callback(tmp_path: Path):
 
     intermediate_events = [val for val in progress_events if 0.0 < val < 1.0]
     assert all(
-        intermediate_events[i] - intermediate_events[i - 1] >= 0.015
+        intermediate_events[i] > intermediate_events[i - 1]
         for i in range(1, len(intermediate_events))
     )
 

@@ -467,7 +467,7 @@ def test_transcode_progress_callback_updates_job_progress(dummy_talk, mock_stora
             progress_history.append(jobs[100].progress_pct)
             on_progress(0.60)
             progress_history.append(jobs[100].progress_pct)
-            on_progress(1.0)
+            on_progress(0.95)
             progress_history.append(jobs[100].progress_pct)
 
     with (
@@ -488,7 +488,7 @@ def test_transcode_progress_callback_updates_job_progress(dummy_talk, mock_stora
     assert job.progress_pct == 100.0
     assert 25.0 in progress_history
     assert 60.0 in progress_history
-    assert 100.0 in progress_history
+    assert 95.0 in progress_history
 
 
 def test_publish_advances_to_done_and_halts(dummy_talk, mock_storage):
