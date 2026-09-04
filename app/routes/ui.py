@@ -13,6 +13,7 @@ from fastapi import (
     HTTPException,
     Request,
     UploadFile,
+    status,
 )
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.templating import Jinja2Templates
@@ -20,6 +21,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app import models
+from app.auth import hash_api_key
 from app.config import PREVIEW_PRESETS
 from app.db import get_db
 from app.pipeline.cut import cut
@@ -29,7 +31,6 @@ from app.pipeline.preview import generate_preview
 from app.pipeline.publish import publish
 from app.pipeline.transcode import PRESET_720P, transcode
 from app.storage import StorageBackend, get_storage_backend
-from tests.conftest import generate_clip
 
 _TEMPLATES_DIR = Path(__file__).parent.parent / "ui" / "templates"
 
@@ -42,6 +43,52 @@ _env = jinja2.Environment(
 templates = Jinja2Templates(env=_env)
 
 router = APIRouter(prefix="/ui", tags=["ui"])
+
+
+def get_ui_client(
+    request: Request,
+    db: Annotated[Session, Depends(get_db)],
+) -> models.Client:
+    """Dependency that extracts API Key from Header, Cookie, or Query Param."""
+    api_key = (
+        request.headers.get("X-API-Key")
+        or request.cookies.get("veditor_api_key")
+        or request.query_params.get("api_key")
+    )
+    if not api_key:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing API Key. Please provide X-API-Key header, veditor_api_key cookie, or api_key query param.",
+        )
+    hashed_key = hash_api_key(api_key)
+    client = (
+        db.query(models.Client).filter(models.Client.hashed_key == hashed_key).first()
+    )
+    if not client:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid API Key",
+        )
+    return client
+
+
+def get_optional_ui_client(
+    request: Request,
+    db: Annotated[Session, Depends(get_db)],
+) -> models.Client | None:
+    """Optional client dependency for public read pages."""
+    api_key = (
+        request.headers.get("X-API-Key")
+        or request.cookies.get("veditor_api_key")
+        or request.query_params.get("api_key")
+    )
+    if not api_key:
+        return None
+    hashed_key = hash_api_key(api_key)
+    return (
+        db.query(models.Client).filter(models.Client.hashed_key == hashed_key).first()
+    )
+
 
 ALL_STATUSES = [
     "waiting_for_files",
@@ -156,23 +203,18 @@ def _execute_full_processing_pipeline(
         storage.put(f"{talk_id}/outro/outro.mp4", outro_tmp)
 
     # 3. Ensure Raw recording exists and Cut
-    raw_key = f"{talk_id}/raw/raw.mp4"
+    raw_keys = storage.list_keys(f"{talk_id}/raw")
+    raw_key = raw_keys[0] if raw_keys else f"{talk_id}/raw/raw.mp4"
     if not storage.exists(raw_key):
-        clip = generate_clip(
-            15.0,
-            pattern="gradient",
-            resolution=(640, 360),
-            fps=25,
-            audio_waveform="tone",
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No raw recording found for talk. Please upload or ingest a recording first.",
         )
-        storage.put(raw_key, clip)
-        # storage-boundary-exempt: temporary synthetic clip cleanup
-        clip.unlink(missing_ok=True)
 
     raw_path = storage.get(raw_key)
     cut_key = f"{talk_id}/cut/cut.mp4"
     s_sec = start_sec if start_sec is not None else 0.0
-    e_sec = end_sec if end_sec is not None else 15.0
+    e_sec = end_sec if end_sec is not None else (talk.raw_duration_seconds or 15.0)
 
     with tempfile.TemporaryDirectory() as tmpdir:
         cut_tmp = Path(tmpdir) / "cut.mp4"
@@ -467,17 +509,29 @@ class TalkEditRequest(BaseModel):
     room: str | None = None
 
 
+def _get_scoped_talk(talk_id: int, client: models.Client, db: Session) -> models.Talk:
+    talk = db.query(models.Talk).filter(models.Talk.id == talk_id).first()
+    if not talk or talk.event_id not in client.event_ids:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Talk not found",
+        )
+    return talk
+
+
 @router.post("/talks/{talk_id}/status")
 def update_talk_status(
     talk_id: int,
     payload: StatusUpdateRequest,
+    client: Annotated[models.Client, Depends(get_ui_client)],
     db: Annotated[Session, Depends(get_db)],
 ):
-    talk = db.query(models.Talk).filter(models.Talk.id == talk_id).first()
-    if not talk:
-        raise HTTPException(status_code=404, detail="Talk not found")
+    talk = _get_scoped_talk(talk_id, client, db)
     if payload.status not in ALL_STATUSES:
-        raise HTTPException(status_code=400, detail=f"Invalid status: {payload.status}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid status: {payload.status}",
+        )
 
     talk.status = payload.status
     if payload.note:
@@ -495,13 +549,12 @@ def update_talk_status(
 @router.post("/talks/{talk_id}/approve")
 def approve_talk(
     talk_id: int,
+    client: Annotated[models.Client, Depends(get_ui_client)],
     db: Annotated[Session, Depends(get_db)],
     storage: Annotated[StorageBackend, Depends(get_storage_backend)],
     payload: ReviewActionRequest | None = None,
 ):
-    talk = db.query(models.Talk).filter(models.Talk.id == talk_id).first()
-    if not talk:
-        raise HTTPException(status_code=404, detail="Talk not found")
+    talk = _get_scoped_talk(talk_id, client, db)
 
     decision = payload.decision if payload else "approved"
     note = payload.note if payload else "Approved in studio"
@@ -538,12 +591,11 @@ def approve_talk(
 @router.post("/talks/{talk_id}/reject")
 def reject_talk(
     talk_id: int,
+    client: Annotated[models.Client, Depends(get_ui_client)],
     db: Annotated[Session, Depends(get_db)],
     payload: ReviewActionRequest | None = None,
 ):
-    talk = db.query(models.Talk).filter(models.Talk.id == talk_id).first()
-    if not talk:
-        raise HTTPException(status_code=404, detail="Talk not found")
+    talk = _get_scoped_talk(talk_id, client, db)
 
     decision = payload.decision if payload else "rejected"
     note = payload.note if payload else "Rejected by reviewer"
@@ -563,12 +615,11 @@ def reject_talk(
 @router.post("/talks/{talk_id}/retry")
 def retry_talk(
     talk_id: int,
+    client: Annotated[models.Client, Depends(get_ui_client)],
     db: Annotated[Session, Depends(get_db)],
     storage: Annotated[StorageBackend, Depends(get_storage_backend)],
 ):
-    talk = db.query(models.Talk).filter(models.Talk.id == talk_id).first()
-    if not talk:
-        raise HTTPException(status_code=404, detail="Talk not found")
+    talk = _get_scoped_talk(talk_id, client, db)
 
     # Clean up stale derived artifacts while preserving the raw recording in raw/
     for derived_stage in ("cut", "intro", "outro", "preview", "final", "publish"):
@@ -586,12 +637,11 @@ def retry_talk(
 @router.post("/talks/{talk_id}/generate-preview")
 def generate_talk_preview(
     talk_id: int,
+    client: Annotated[models.Client, Depends(get_ui_client)],
     db: Annotated[Session, Depends(get_db)],
     storage: Annotated[StorageBackend, Depends(get_storage_backend)],
 ):
-    talk = db.query(models.Talk).filter(models.Talk.id == talk_id).first()
-    if not talk:
-        raise HTTPException(status_code=404, detail="Talk not found")
+    talk = _get_scoped_talk(talk_id, client, db)
 
     _execute_full_processing_pipeline(talk, storage, db)
     talk.status = "preview"
@@ -608,11 +658,10 @@ def generate_talk_preview(
 def edit_talk(
     talk_id: int,
     payload: TalkEditRequest,
+    client: Annotated[models.Client, Depends(get_ui_client)],
     db: Annotated[Session, Depends(get_db)],
 ):
-    talk = db.query(models.Talk).filter(models.Talk.id == talk_id).first()
-    if not talk:
-        raise HTTPException(status_code=404, detail="Talk not found")
+    talk = _get_scoped_talk(talk_id, client, db)
 
     if payload.title is not None:
         talk.title = payload.title
@@ -626,6 +675,7 @@ def edit_talk(
 @router.post("/schedule/import")
 async def import_schedule(
     request: Request,
+    client: Annotated[models.Client, Depends(get_ui_client)],
     db: Annotated[Session, Depends(get_db)],
     file: Annotated[UploadFile | None, File()] = None,
 ):
@@ -638,7 +688,9 @@ async def import_schedule(
         data = body.get("schedule") or body
 
     if not data:
-        raise HTTPException(status_code=400, detail="Empty schedule data")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Empty schedule data"
+        )
 
     event_name = "Conference Event"
     talks_to_create = []
@@ -671,6 +723,11 @@ async def import_schedule(
         db.commit()
         db.refresh(event)
 
+    # Ensure client has access to this event
+    if event.id not in client.event_ids:
+        client.event_ids = list(set(client.event_ids + [event.id]))
+        db.commit()
+
     created_count = 0
     now = datetime.now(UTC)
     for t_info in talks_to_create:
@@ -699,6 +756,7 @@ async def import_schedule(
 @router.post("/talks/create")
 async def create_single_talk(
     request: Request,
+    client: Annotated[models.Client, Depends(get_ui_client)],
     db: Annotated[Session, Depends(get_db)],
 ):
     body = await request.json()
@@ -712,6 +770,10 @@ async def create_single_talk(
         db.add(event)
         db.commit()
         db.refresh(event)
+
+    if event.id not in client.event_ids:
+        client.event_ids = list(set(client.event_ids + [event.id]))
+        db.commit()
 
     now = datetime.now(UTC)
     talk = models.Talk(
@@ -732,14 +794,13 @@ async def create_single_talk(
 async def upload_talk_recording(
     talk_id: int,
     file: Annotated[UploadFile, File()],
+    client: Annotated[models.Client, Depends(get_ui_client)],
     db: Annotated[Session, Depends(get_db)],
     storage: Annotated[StorageBackend, Depends(get_storage_backend)],
 ):
     import av
 
-    talk = db.query(models.Talk).filter(models.Talk.id == talk_id).first()
-    if not talk:
-        raise HTTPException(status_code=404, detail="Talk not found")
+    talk = _get_scoped_talk(talk_id, client, db)
 
     with tempfile.TemporaryDirectory() as tmpdir:
         tmp_path = Path(tmpdir) / (file.filename or "recording.mp4")
@@ -754,7 +815,8 @@ async def upload_talk_recording(
                 duration = float(container.duration) / av.time_base
         except Exception as exc:
             raise HTTPException(
-                status_code=400, detail=f"Invalid video file: {exc}"
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid video file: {exc}",
             ) from exc
 
         raw_key = f"{talk_id}/raw/raw.mp4"
@@ -778,6 +840,7 @@ async def upload_talk_recording(
 async def attach_room_recording(
     room: Annotated[str, Form()],
     file: Annotated[UploadFile, File()],
+    client: Annotated[models.Client, Depends(get_ui_client)],
     db: Annotated[Session, Depends(get_db)],
     storage: Annotated[StorageBackend, Depends(get_storage_backend)],
     event_id: Annotated[int | None, Form()] = None,
@@ -785,14 +848,23 @@ async def attach_room_recording(
     import av
 
     room_clean = room.strip()
-    query = db.query(models.Talk).filter(models.Talk.room == room_clean)
+    query = db.query(models.Talk).filter(
+        models.Talk.room == room_clean,
+        models.Talk.event_id.in_(client.event_ids),
+    )
     if event_id is not None:
+        if event_id not in client.event_ids:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Client is not authorized to access this event",
+            )
         query = query.filter(models.Talk.event_id == event_id)
 
     talks_in_room = query.all()
     if not talks_in_room:
         raise HTTPException(
-            status_code=404, detail=f"No talks found in room '{room_clean}'"
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"No talks found in room '{room_clean}'",
         )
 
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -808,7 +880,8 @@ async def attach_room_recording(
                 duration = float(container.duration) / av.time_base
         except Exception as exc:
             raise HTTPException(
-                status_code=400, detail=f"Invalid video file: {exc}"
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid video file: {exc}",
             ) from exc
 
         for talk in talks_in_room:
@@ -835,12 +908,11 @@ class BulkDeleteRequest(BaseModel):
 @router.post("/talks/{talk_id}/delete")
 def delete_talk(
     talk_id: int,
+    client: Annotated[models.Client, Depends(get_ui_client)],
     db: Annotated[Session, Depends(get_db)],
     storage: Annotated[StorageBackend, Depends(get_storage_backend)],
 ):
-    talk = db.query(models.Talk).filter(models.Talk.id == talk_id).first()
-    if not talk:
-        raise HTTPException(status_code=404, detail="Talk not found")
+    talk = _get_scoped_talk(talk_id, client, db)
 
     storage.delete(f"{talk_id}")
     db.query(models.Review).filter(models.Review.talk_id == talk_id).delete()
@@ -854,20 +926,33 @@ def delete_talk(
 @router.post("/talks/bulk-delete")
 def bulk_delete_talks(
     payload: BulkDeleteRequest,
+    client: Annotated[models.Client, Depends(get_ui_client)],
     db: Annotated[Session, Depends(get_db)],
     storage: Annotated[StorageBackend, Depends(get_storage_backend)],
 ):
     if not payload.talk_ids:
         return {"status": "ok", "deleted_count": 0}
 
-    for tid in payload.talk_ids:
+    valid_talks = (
+        db.query(models.Talk)
+        .filter(
+            models.Talk.id.in_(payload.talk_ids),
+            models.Talk.event_id.in_(client.event_ids),
+        )
+        .all()
+    )
+    valid_ids = [t.id for t in valid_talks]
+    if not valid_ids:
+        return {"status": "ok", "deleted_count": 0}
+
+    for tid in valid_ids:
         storage.delete(f"{tid}")
         db.query(models.Review).filter(models.Review.talk_id == tid).delete()
         db.query(models.Job).filter(models.Job.talk_id == tid).delete()
 
     deleted_count = (
         db.query(models.Talk)
-        .filter(models.Talk.id.in_(payload.talk_ids))
+        .filter(models.Talk.id.in_(valid_ids))
         .delete(synchronize_session=False)
     )
     db.commit()
