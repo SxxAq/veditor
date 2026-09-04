@@ -38,9 +38,23 @@ from app.db import SessionLocal, get_db
 def db_session():
     db = SessionLocal()
     app.dependency_overrides[get_db] = lambda: db
+    created = []
+    orig_add = db.add
+
+    def track_add(instance):
+        created.append(instance)
+        return orig_add(instance)
+
+    db.add = track_add
     try:
         yield db
     finally:
+        for obj in reversed(created):
+            try:
+                db.delete(obj)
+                db.commit()
+            except Exception:  # noqa: BLE001
+                db.rollback()
         app.dependency_overrides.pop(get_db, None)
         db.close()
 

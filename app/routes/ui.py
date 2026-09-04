@@ -328,13 +328,19 @@ def _execute_master_transcode_pipeline(
 def dashboard(
     request: Request,
     db: Annotated[Session, Depends(get_db)],
+    client: Annotated[models.Client | None, Depends(get_optional_ui_client)] = None,
     event_id: int | None = None,
     status_filter: str | None = None,
     q: str | None = None,
 ):
     query = db.query(models.Talk)
+    if client is not None:
+        query = query.filter(models.Talk.event_id.in_(client.event_ids))
     if event_id is not None:
-        query = query.filter(models.Talk.event_id == event_id)
+        if client is not None and event_id not in client.event_ids:
+            query = query.filter(models.Talk.id == -1)
+        else:
+            query = query.filter(models.Talk.event_id == event_id)
     if status_filter:
         query = query.filter(models.Talk.status == status_filter)
 
@@ -343,7 +349,15 @@ def dashboard(
         q_lower = q.lower()
         talks = [t for t in talks if q_lower in t.title.lower()]
 
-    all_talks = db.query(models.Talk).all()
+    if client is not None:
+        all_talks = (
+            db.query(models.Talk)
+            .filter(models.Talk.event_id.in_(client.event_ids))
+            .all()
+        )
+    else:
+        all_talks = db.query(models.Talk).all()
+
     all_rooms = sorted({t.room for t in all_talks if t.room})
     stats = {
         "total": len(all_talks),
@@ -415,9 +429,10 @@ def studio(
     talk_id: int,
     db: Annotated[Session, Depends(get_db)],
     storage: Annotated[StorageBackend, Depends(get_storage_backend)],
+    client: Annotated[models.Client | None, Depends(get_optional_ui_client)] = None,
 ):
     talk = db.query(models.Talk).filter(models.Talk.id == talk_id).first()
-    if not talk:
+    if not talk or (client is not None and talk.event_id not in client.event_ids):
         raise HTTPException(status_code=404, detail="Talk not found")
 
     jobs = (
