@@ -63,19 +63,37 @@ window.VEditorConfig = window.VEditorConfig || {
 })();
 
 // ── Auth & Role Manager ─────────────────────────────────────────
-window.promptApiKey = function () {
-  const current = window.getApiKey();
-  const entered = prompt("Enter your VEditor API Key:", current);
-  if (entered !== null) {
-    window.setApiKey(entered.trim());
+window.openApiKeyModal = function () {
+  const m = document.getElementById('modal-api-key');
+  const input = document.getElementById('api-key-input');
+  if (input) input.value = window.getApiKey();
+  if (m) m.style.display = 'flex';
+};
+
+window.closeApiKeyModal = function () {
+  const m = document.getElementById('modal-api-key');
+  if (m) m.style.display = 'none';
+};
+
+window.saveApiKeyFromModal = function () {
+  const input = document.getElementById('api-key-input');
+  if (input) {
+    const key = input.value.trim();
+    window.setApiKey(key);
     const ind = document.getElementById('api-key-indicator');
     if (ind) {
-      ind.textContent = entered.trim() ? 'Key Set' : 'Key';
-      ind.style.color = entered.trim() ? 'var(--v-primary)' : '';
+      ind.textContent = key ? 'Key Set' : 'Key';
+      ind.style.color = key ? 'var(--v-primary)' : '';
     }
-    location.reload();
   }
+  window.closeApiKeyModal();
+  location.reload();
 };
+
+window.promptApiKey = function () {
+  window.openApiKeyModal();
+};
+
 window.getApiKey = function () {
   return localStorage.getItem('veditor_api_key') || '';
 };
@@ -106,12 +124,8 @@ window.authFetch = function (url, options = {}) {
     }
   }
   return fetch(url, options).then(res => {
-    if (res.status === 401) {
-      const entered = prompt("Authentication Required: Please enter your VEditor API Key:");
-      if (entered) {
-        window.setApiKey(entered.trim());
-        return window.authFetch(url, options);
-      }
+    if (res.status === 401 && !options._isPolling) {
+      window.openApiKeyModal();
     }
     return res;
   });
