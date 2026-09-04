@@ -135,6 +135,88 @@ a:hover { color: var(--v-primary-hover); }
 
 .topbar-actions { margin-left: auto; display: flex; align-items: center; gap: 10px; }
 
+/* ── Topbar Controls ─────────────────────────────────────────── */
+.topbar-control-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.role-badge-select {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--v-bg-surface);
+  border: 1px solid var(--v-border-subtle);
+  border-radius: var(--v-radius-sm);
+  padding: 4px 8px;
+  font-size: 0.78rem;
+  font-weight: 500;
+  color: var(--v-text-secondary);
+  height: 30px;
+}
+
+.role-badge-select label {
+  color: var(--v-text-muted);
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin: 0;
+  cursor: pointer;
+}
+
+.role-badge-select select {
+  background: transparent;
+  border: none;
+  outline: none;
+  font-family: inherit;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--v-text-primary);
+  cursor: pointer;
+  padding: 0;
+}
+
+.key-badge-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--v-bg-surface);
+  border: 1px solid var(--v-border-subtle);
+  border-radius: var(--v-radius-sm);
+  padding: 0 10px;
+  font-size: 0.78rem;
+  font-weight: 500;
+  color: var(--v-text-secondary);
+  cursor: pointer;
+  height: 30px;
+  transition: all 0.15s ease;
+  font-family: inherit;
+}
+
+.key-badge-btn:hover {
+  background: var(--v-bg-subtle);
+  border-color: var(--v-primary);
+  color: var(--v-primary);
+}
+
+.key-badge-btn .key-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--v-text-muted);
+  flex-shrink: 0;
+}
+
+.key-badge-btn.key-set .key-dot {
+  background: #10b981;
+}
+
+.key-badge-btn.key-set {
+  border-color: rgba(16, 185, 129, 0.3);
+}
+
 .page-body { padding: 24px 28px; flex: 1; }
 
 /* ── Stats Summary Row ────────────────────────────────────────── */
