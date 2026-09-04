@@ -28,7 +28,11 @@ function getActiveTalkIds() {
 
 async function pollTalk(talkId) {
   try {
-    const r = await (window.authFetch || fetch)(`/talks/${talkId}`);
+    const key = window.getApiKey();
+    if (!key) return;
+    const r = await fetch(`/talks/${talkId}`, {
+      headers: { 'X-API-Key': key }
+    });
     if (!r.ok) return;
     const data = await r.json();
     const cell = document.querySelector(`.status-cell[data-talk-id="${talkId}"]`);
