@@ -9,7 +9,11 @@ from app import models, schemas
 from app.auth import get_client, verify_event_access
 from app.config import settings
 from app.db import get_db
-from app.ingest import IngestPathRejectedError, stage_recording
+from app.ingest import (
+    IngestPathRejectedError,
+    InsufficientStorageError,
+    stage_recording,
+)
 from app.queue import heavy_queue, light_queue
 from app.states import advance
 from app.storage import StorageBackend, get_storage_backend
@@ -136,6 +140,7 @@ def ingest_recording(
     Returns 404 if talk not found or not in caller's event_ids.
     Returns 409 if talk status is not 'waiting_for_files'.
     Returns 400 if ingest path validation fails.
+    Returns 507 if storage space is insufficient.
     """
     talk = db.query(models.Talk).filter(models.Talk.id == talk_id).first()
     if not talk or talk.event_id not in client.event_ids:
@@ -154,6 +159,11 @@ def ingest_recording(
     except IngestPathRejectedError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+    except InsufficientStorageError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_507_INSUFFICIENT_STORAGE,
             detail=str(exc),
         ) from exc
 

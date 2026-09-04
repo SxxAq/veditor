@@ -44,6 +44,7 @@ class Settings(BaseSettings):
     storage_backend: Literal["local"] = "local"
     ingest_roots: list[Path] = []
     preview_presets: dict[str, PreviewPreset] = PREVIEW_PRESETS
+    disk_guard_multiplier: float = 3.0
 
     @field_validator("ingest_roots", mode="after")
     @classmethod
