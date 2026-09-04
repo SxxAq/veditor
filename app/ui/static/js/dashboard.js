@@ -28,9 +28,7 @@ function getActiveTalkIds() {
 
 async function pollTalk(talkId) {
   try {
-    const r = await fetch(`/talks/${talkId}`, {
-      headers: { 'X-API-Key': window._veditorApiKey || '' }
-    });
+    const r = await (window.authFetch || fetch)(`/talks/${talkId}`);
     if (!r.ok) return;
     const data = await r.json();
     const cell = document.querySelector(`.status-cell[data-talk-id="${talkId}"]`);
@@ -153,7 +151,7 @@ window.submitAttachRoomRecording = async function() {
     fd.append('room', roomInput.trim());
     fd.append('file', fileInput.files[0]);
 
-    const res = await fetch('/ui/room/attach-recording', {
+    const res = await (window.authFetch || fetch)('/ui/room/attach-recording', {
       method: 'POST',
       body: fd,
     });
@@ -196,11 +194,11 @@ window.submitScheduleImport = async function() {
     if (fileInput && fileInput.files && fileInput.files[0]) {
       const fd = new FormData();
       fd.append('file', fileInput.files[0]);
-      res = await fetch('/ui/schedule/import', { method: 'POST', body: fd });
+      res = await (window.authFetch || fetch)('/ui/schedule/import', { method: 'POST', body: fd });
     } else if (jsonText.trim()) {
       let parsed;
       try { parsed = JSON.parse(jsonText); } catch { throw new Error('Invalid JSON format'); }
-      res = await fetch('/ui/schedule/import', {
+      res = await (window.authFetch || fetch)('/ui/schedule/import', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(parsed),
@@ -239,7 +237,7 @@ window.submitQuickTalk = async function() {
   if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spinner spinner-sm"></span> Creating...'; }
 
   try {
-    const res = await fetch('/ui/talks/create', {
+    const res = await (window.authFetch || fetch)('/ui/talks/create', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ event_name: eventName, title, room }),
@@ -265,7 +263,7 @@ window.deleteSingleTalk = async function(id, title) {
   }
 
   try {
-    const res = await fetch(`/ui/talks/${id}/delete`, { method: 'POST' });
+    const res = await (window.authFetch || fetch)(`/ui/talks/${id}/delete`, { method: 'POST' });
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
       throw new Error(err.detail || `Server returned ${res.status}`);
@@ -330,7 +328,7 @@ window.submitBulkDelete = async function() {
   if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spinner spinner-sm"></span> Deleting...'; }
 
   try {
-    const res = await fetch('/ui/talks/bulk-delete', {
+    const res = await (window.authFetch || fetch)('/ui/talks/bulk-delete', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ talk_ids: selected }),

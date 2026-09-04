@@ -345,7 +345,7 @@ document.addEventListener('keydown', e => {
 
 // ── Interactive Pipeline Actions ────────────────────────────────
 async function postUI(path, body = {}) {
-  const res = await fetch(path, {
+  const res = await (window.authFetch || fetch)(path, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -426,7 +426,7 @@ window.handleVideoFileUpload = async function(e, talkId) {
     const fd = new FormData();
     fd.append('file', file);
 
-    const res = await fetch(`/ui/talks/${talkId}/upload-recording`, {
+    const res = await (window.authFetch || fetch)(`/ui/talks/${talkId}/upload-recording`, {
       method: 'POST',
       body: fd,
     });

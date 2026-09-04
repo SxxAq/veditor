@@ -50,5 +50,69 @@ window.VEditorConfig = window.VEditorConfig || {
 
   document.addEventListener('DOMContentLoaded', () => {
     applyTheme(initial);
+    const role = window.getUserRole();
+    document.documentElement.setAttribute('data-user-role', role);
+    const sel = document.getElementById('user-role-select');
+    if (sel) sel.value = role;
+    const ind = document.getElementById('api-key-indicator');
+    if (ind && window.getApiKey()) {
+      ind.textContent = 'Key Set';
+      ind.style.color = 'var(--v-primary)';
+    }
   });
 })();
+
+// ── Auth & Role Manager ─────────────────────────────────────────
+window.promptApiKey = function () {
+  const current = window.getApiKey();
+  const entered = prompt("Enter your VEditor API Key:", current);
+  if (entered !== null) {
+    window.setApiKey(entered.trim());
+    const ind = document.getElementById('api-key-indicator');
+    if (ind) {
+      ind.textContent = entered.trim() ? 'Key Set' : 'Key';
+      ind.style.color = entered.trim() ? 'var(--v-primary)' : '';
+    }
+    location.reload();
+  }
+};
+window.getApiKey = function () {
+  return localStorage.getItem('veditor_api_key') || '';
+};
+
+window.setApiKey = function (key) {
+  localStorage.setItem('veditor_api_key', key);
+  document.cookie = "veditor_api_key=" + encodeURIComponent(key) + "; path=/; max-age=31536000; SameSite=Lax";
+};
+
+window.getUserRole = function () {
+  return localStorage.getItem('veditor_role') || 'admin';
+};
+
+window.setUserRole = function (role) {
+  localStorage.setItem('veditor_role', role);
+  document.documentElement.setAttribute('data-user-role', role);
+  window.dispatchEvent(new CustomEvent('veditor:role-changed', { detail: { role } }));
+};
+
+window.authFetch = function (url, options = {}) {
+  options.headers = options.headers || {};
+  const key = window.getApiKey();
+  if (key) {
+    if (options.headers instanceof Headers) {
+      options.headers.set('X-API-Key', key);
+    } else {
+      options.headers['X-API-Key'] = key;
+    }
+  }
+  return fetch(url, options).then(res => {
+    if (res.status === 401) {
+      const entered = prompt("Authentication Required: Please enter your VEditor API Key:");
+      if (entered) {
+        window.setApiKey(entered.trim());
+        return window.authFetch(url, options);
+      }
+    }
+    return res;
+  });
+};

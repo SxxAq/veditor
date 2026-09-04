@@ -116,3 +116,109 @@ def test_media_serving(client: TestClient, tmp_path):
 
     not_found = client.get("/ui/media/999/missing.mp4")
     assert not_found.status_code == 404
+
+
+def test_ui_post_routes_require_authentication(client: TestClient, db_session):
+    """Mutating UI endpoints must return 401 if unauthenticated."""
+    res = client.post("/ui/talks/1/status", json={"status": "waiting_for_files"})
+    assert res.status_code == 401
+
+    res = client.post("/ui/talks/1/approve")
+    assert res.status_code == 401
+
+    res = client.post("/ui/talks/1/reject")
+    assert res.status_code == 401
+
+    res = client.post("/ui/talks/1/retry")
+    assert res.status_code == 401
+
+    res = client.post("/ui/talks/1/delete")
+    assert res.status_code == 401
+
+
+def test_ui_post_routes_event_scoping(client: TestClient, db_session):
+    """Mutating talks belonging to other events returns 404."""
+    import uuid
+
+    from app.auth import hash_api_key
+
+    # Client has access only to event 1
+    api_key = f"test_ui_api_key_{uuid.uuid4().hex}"
+    client_model = models.Client(hashed_key=hash_api_key(api_key), event_ids=[1])
+    db_session.add(client_model)
+
+    event2 = models.Event(name=f"Other Event {uuid.uuid4().hex}")
+    db_session.add(event2)
+    db_session.commit()
+    db_session.refresh(event2)
+
+    now = datetime.now(tz=UTC)
+    talk_other = models.Talk(
+        event_id=event2.id,
+        title=f"Other Event Talk {uuid.uuid4().hex}",
+        room="Hall B",
+        start=now,
+        end=now + timedelta(minutes=30),
+        status="waiting_for_files",
+    )
+    db_session.add(talk_other)
+    db_session.commit()
+    db_session.refresh(talk_other)
+
+    # Attempt mutation with X-API-Key
+    headers = {"X-API-Key": api_key}
+    res = client.post(
+        f"/ui/talks/{talk_other.id}/status",
+        json={"status": "needs_work"},
+        headers=headers,
+    )
+    assert res.status_code == 404
+
+
+def test_ui_post_routes_authenticated_success(client: TestClient, db_session):
+    """Authenticated UI mutations succeed with valid key."""
+    import uuid
+
+    from app.auth import hash_api_key
+
+    event = models.Event(name=f"Allowed Event {uuid.uuid4().hex}")
+    db_session.add(event)
+    db_session.commit()
+    db_session.refresh(event)
+
+    api_key = f"valid_ui_key_{uuid.uuid4().hex}"
+    client_model = models.Client(hashed_key=hash_api_key(api_key), event_ids=[event.id])
+    db_session.add(client_model)
+    db_session.commit()
+
+    now = datetime.now(tz=UTC)
+    talk = models.Talk(
+        event_id=event.id,
+        title=f"Authorized Talk {uuid.uuid4().hex}",
+        room="Hall A",
+        start=now,
+        end=now + timedelta(minutes=30),
+        status="waiting_for_files",
+    )
+    db_session.add(talk)
+    db_session.commit()
+    db_session.refresh(talk)
+
+    # Header authentication
+    res = client.post(
+        f"/ui/talks/{talk.id}/status",
+        json={"status": "pending_approval", "note": "Reviewed"},
+        headers={"X-API-Key": api_key},
+    )
+    assert res.status_code == 200
+    assert res.json()["new_status"] == "pending_approval"
+
+    # Cookie authentication
+    client.cookies.set("veditor_api_key", api_key)
+    res_cookie = client.post(
+        f"/ui/talks/{talk.id}/edit",
+        json={"title": "Updated Title", "room": "Hall C"},
+    )
+    assert res_cookie.status_code == 200
+    assert res_cookie.json()["title"] == "Updated Title"
+    client.cookies.clear()
