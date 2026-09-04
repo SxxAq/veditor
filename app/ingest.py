@@ -11,6 +11,15 @@ class IngestPathRejectedError(ValueError):
     pass
 
 
+class InsufficientStorageError(Exception):
+    def __init__(self, required_bytes: int, available_bytes: int):
+        self.required_bytes = required_bytes
+        self.available_bytes = available_bytes
+        super().__init__(
+            f"Insufficient storage: required {required_bytes} bytes, but only {available_bytes} bytes available"
+        )
+
+
 def validate_media_file(path: Path) -> None:
     try:
         with av.open(str(path)) as container:
@@ -67,6 +76,15 @@ def stage_recording(
         raise IngestPathRejectedError("Invalid or missing ingest path")
 
     validate_media_file(resolved_path)
+
+    file_size = resolved_path.stat().st_size
+    required_bytes = int(file_size * settings.disk_guard_multiplier)
+    available_bytes = backend.free_bytes()
+    if available_bytes < required_bytes:
+        raise InsufficientStorageError(
+            required_bytes=required_bytes,
+            available_bytes=available_bytes,
+        )
 
     rel_path = resolved_path.relative_to(matched_root)
     key = f"{talk_id}/raw/{rel_path}"
