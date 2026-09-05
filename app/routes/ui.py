@@ -222,12 +222,13 @@ def _execute_full_processing_pipeline(
     e_sec = (
         end_sec
         if end_sec is not None
-        else (
-            talk.cut_end
-            if talk.cut_end is not None
-            else (talk.raw_duration_seconds or 15.0)
-        )
+        else (talk.cut_end if talk.cut_end is not None else talk.raw_duration_seconds)
     )
+    if e_sec is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Talk duration is unknown. Set cut bounds before processing.",
+        )
 
     talk.cut_start = s_sec
     talk.cut_end = e_sec
@@ -448,9 +449,11 @@ def studio(
                 )
 
     # Check for any dynamic raw filenames
+    import urllib.parse
+
     for rk in storage.list_keys(f"{talk.id}/raw"):
         fname = Path(rk).name
-        url = f"/studio/media/{talk.id}/raw/{fname}"
+        url = f"/studio/media/{talk.id}/raw/{urllib.parse.quote(fname)}"
         if url not in seen_urls:
             seen_urls.add(url)
             media_assets.append(

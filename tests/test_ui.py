@@ -156,9 +156,16 @@ def test_ui_post_routes_event_scoping(client: TestClient, db_session):
 
     from app.auth import hash_api_key
 
-    # Client has access only to event 1
+    # Client has access only to an allowed event
+    allowed_event = models.Event(name=f"Allowed Event {uuid.uuid4().hex}")
+    db_session.add(allowed_event)
+    db_session.commit()
+    db_session.refresh(allowed_event)
+
     api_key = f"test_ui_api_key_{uuid.uuid4().hex}"
-    client_model = models.Client(hashed_key=hash_api_key(api_key), event_ids=[1])
+    client_model = models.Client(
+        hashed_key=hash_api_key(api_key), event_ids=[allowed_event.id]
+    )
     db_session.add(client_model)
 
     event2 = models.Event(name=f"Other Event {uuid.uuid4().hex}")
@@ -287,7 +294,7 @@ def test_import_schedule_json_list(client: TestClient, db_session):
         .filter(models.Talk.event_id == data["event_id"])
         .all()
     )
-    assert len(talks) >= 3
+    assert len(talks) == 3
     keynote = next(
         t for t in talks if t.title == "Opening Keynote: Open Source AI Frontiers"
     )

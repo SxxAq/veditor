@@ -158,13 +158,15 @@ function updateCutMarkersUI() {
 }
 
 function setInPoint(timeSec) {
-  inPointSec = Math.max(0, timeSec);
-  if (inPointSec > outPointSec) outPointSec = inPointSec + 1;
+  const max = (video && Number.isFinite(video.duration) && video.duration > 0) ? video.duration : Infinity;
+  inPointSec = Math.min(max, Math.max(0, timeSec));
+  if (inPointSec > outPointSec) outPointSec = Math.min(max, inPointSec + 1);
   updateCutMarkersUI();
 }
 
 function setOutPoint(timeSec) {
-  outPointSec = Math.max(inPointSec + 0.1, timeSec);
+  const max = (video && Number.isFinite(video.duration) && video.duration > 0) ? video.duration : Infinity;
+  outPointSec = Math.min(max, Math.max(inPointSec + 0.1, timeSec));
   updateCutMarkersUI();
 }
 
@@ -476,4 +478,11 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     });
   }
+
+  document.addEventListener('click', (e) => {
+    const btn = e.target.closest('.btn-play-asset');
+    if (!btn) return;
+    const url = btn.getAttribute('data-asset-url') || btn.closest('.media-asset-row')?.getAttribute('data-asset-url');
+    if (url) window.loadVideoSrc(url);
+  });
 });

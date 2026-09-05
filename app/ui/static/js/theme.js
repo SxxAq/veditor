@@ -104,7 +104,8 @@ window.getApiKey = function () {
 
 window.setApiKey = function (key) {
   localStorage.setItem('veditor_api_key', key);
-  document.cookie = "veditor_api_key=" + encodeURIComponent(key) + "; path=/; max-age=31536000; SameSite=Lax";
+  const secure = location.protocol === 'https:' ? '; Secure' : '';
+  document.cookie = "veditor_api_key=" + encodeURIComponent(key) + "; path=/; max-age=31536000; SameSite=Lax" + secure;
 };
 
 window.getUserRole = function () {

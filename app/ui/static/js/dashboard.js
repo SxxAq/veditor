@@ -368,3 +368,12 @@ window.submitBulkDelete = async function() {
     if (btn) { btn.disabled = false; btn.innerHTML = orig; }
   }
 };
+
+document.addEventListener('click', (e) => {
+  const btn = e.target.closest('.btn-delete-talk');
+  if (!btn) return;
+  e.stopPropagation();
+  const tid = Number(btn.dataset.talkId);
+  const title = btn.dataset.talkTitle || '';
+  if (tid) window.deleteSingleTalk(tid, title);
+});
