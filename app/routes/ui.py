@@ -24,6 +24,7 @@ from app import models
 from app.auth import hash_api_key
 from app.config import PREVIEW_PRESETS
 from app.db import get_db
+from app.pipeline.concat import concat
 from app.pipeline.cut import cut
 from app.pipeline.intro import generate_intro_clip
 from app.pipeline.outro import generate_outro_clip
@@ -213,8 +214,24 @@ def _execute_full_processing_pipeline(
 
     raw_path = storage.get(raw_key)
     cut_key = f"{talk_id}/cut/cut.mp4"
-    s_sec = start_sec if start_sec is not None else 0.0
-    e_sec = end_sec if end_sec is not None else (talk.raw_duration_seconds or 15.0)
+    s_sec = (
+        start_sec
+        if start_sec is not None
+        else (talk.cut_start if talk.cut_start is not None else 0.0)
+    )
+    e_sec = (
+        end_sec
+        if end_sec is not None
+        else (
+            talk.cut_end
+            if talk.cut_end is not None
+            else (talk.raw_duration_seconds or 15.0)
+        )
+    )
+
+    talk.cut_start = s_sec
+    talk.cut_end = e_sec
+    db.commit()
 
     with tempfile.TemporaryDirectory() as tmpdir:
         cut_tmp = Path(tmpdir) / "cut.mp4"
@@ -239,48 +256,6 @@ def _execute_full_processing_pipeline(
         db.add(job)
 
 
-def _concat_clips(
-    clip_paths: list[Path], output_path: Path, target_resolution=(1280, 720), fps=25
-) -> None:
-    """Concatenates intro + talk + outro clips into a single video."""
-    import av
-
-    with av.open(
-        str(output_path), mode="w", options={"movflags": "faststart"}
-    ) as out_container:
-        v_stream = out_container.add_stream("libx264", rate=fps, options={"crf": "22"})
-        v_stream.width, v_stream.height = target_resolution
-        v_stream.pix_fmt = "yuv420p"
-
-        a_stream = out_container.add_stream("aac", rate=48000)
-        a_stream.layout = "stereo"
-        resampler = av.AudioResampler(format="s16p", layout="stereo", rate=48000)
-
-        for clip in clip_paths:
-            if not clip.exists():
-                continue
-            with av.open(str(clip)) as in_container:
-                if in_container.streams.video:
-                    for frame in in_container.decode(in_container.streams.video[0]):
-                        img = frame.to_image().resize(target_resolution)
-                        new_frame = av.VideoFrame.from_image(img)
-                        for packet in v_stream.encode(new_frame):
-                            out_container.mux(packet)
-                if in_container.streams.audio:
-                    for frame in in_container.decode(in_container.streams.audio[0]):
-                        for resampled in resampler.resample(frame):
-                            for packet in a_stream.encode(resampled):
-                                out_container.mux(packet)
-
-        for resampled in resampler.resample(None):
-            for packet in a_stream.encode(resampled):
-                out_container.mux(packet)
-        for packet in v_stream.encode():
-            out_container.mux(packet)
-        for packet in a_stream.encode():
-            out_container.mux(packet)
-
-
 def _execute_master_transcode_pipeline(
     talk: models.Talk, storage: StorageBackend, db: Session
 ) -> None:
@@ -298,20 +273,17 @@ def _execute_master_transcode_pipeline(
         composite_tmp = Path(tmpdir) / "composite.mp4"
         final_tmp = Path(tmpdir) / "final.mp4"
 
-        clips_to_join = []
-        if storage.exists(intro_key):
-            clips_to_join.append(storage.get(intro_key))
-        if storage.exists(cut_key):
-            clips_to_join.append(storage.get(cut_key))
-        if storage.exists(outro_key):
-            clips_to_join.append(storage.get(outro_key))
+        intro_p = Path(storage.get(intro_key)) if storage.exists(intro_key) else None
+        cut_p = Path(storage.get(cut_key))
+        outro_p = Path(storage.get(outro_key)) if storage.exists(outro_key) else None
 
-        if clips_to_join:
-            _concat_clips(clips_to_join, composite_tmp)
-            transcode(composite_tmp, final_tmp, preset=PRESET_720P)
-        else:
-            transcode(storage.get(cut_key), final_tmp, preset=PRESET_720P)
-
+        concat(
+            cut_path=cut_p,
+            intro_path=intro_p,
+            outro_path=outro_p,
+            output_path=composite_tmp,
+        )
+        transcode(composite_tmp, final_tmp, preset=PRESET_720P)
         publish(final_tmp, talk_id, storage)
 
     for kind in ("transcode", "publish"):
@@ -689,6 +661,39 @@ def edit_talk(
     return {"status": "ok", "title": talk.title, "room": talk.room}
 
 
+def _parse_iso_datetime(val: str | None) -> datetime | None:
+    if not val or not isinstance(val, str):
+        return None
+    try:
+        dt = datetime.fromisoformat(val)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=UTC)
+        return dt
+    except ValueError, TypeError:
+        return None
+
+
+def _parse_duration_minutes(val: str | float | None) -> int | None:
+    if val is None:
+        return None
+    if isinstance(val, (int, float)):
+        return int(val)
+    if isinstance(val, str):
+        val = val.strip()
+        if ":" in val:
+            parts = val.split(":")
+            if len(parts) in (2, 3):
+                try:
+                    return int(parts[0]) * 60 + int(parts[1])
+                except ValueError:
+                    return None
+        try:
+            return int(val)
+        except ValueError:
+            return None
+    return None
+
+
 @router.post("/schedule/import")
 async def import_schedule(
     request: Request,
@@ -702,9 +707,12 @@ async def import_schedule(
         data = json.loads(content.decode("utf-8"))
     else:
         body = await request.json()
-        data = body.get("schedule") or body
+        if isinstance(body, dict):
+            data = body.get("schedule") or body.get("talks") or body
+        else:
+            data = body
 
-    if not data:
+    if not data and not isinstance(data, list):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail="Empty schedule data"
         )
@@ -723,6 +731,9 @@ async def import_schedule(
                             {
                                 "title": t.get("title", "Untitled Session"),
                                 "room": room_name,
+                                "start": t.get("date") or t.get("start"),
+                                "end": t.get("end"),
+                                "duration": t.get("duration"),
                             }
                         )
         elif "talks" in data:
@@ -733,9 +744,36 @@ async def import_schedule(
     elif isinstance(data, list):
         talks_to_create = data
 
-    event = db.query(models.Event).filter(models.Event.name == event_name).first()
+    if not talks_to_create:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No sessions found to import",
+        )
+
+    target_event_id = None
+    if isinstance(data, dict) and data.get("event_id"):
+        target_event_id = data.get("event_id")
+    elif (
+        talks_to_create
+        and isinstance(talks_to_create[0], dict)
+        and talks_to_create[0].get("event_id")
+    ):
+        target_event_id = talks_to_create[0].get("event_id")
+
+    event = None
+    if target_event_id:
+        event = (
+            db.query(models.Event).filter(models.Event.id == target_event_id).first()
+        )
+
     if not event:
-        event = models.Event(name=event_name)
+        event = db.query(models.Event).filter(models.Event.name == event_name).first()
+
+    if not event:
+        if target_event_id:
+            event = models.Event(id=target_event_id, name=event_name)
+        else:
+            event = models.Event(name=event_name)
         db.add(event)
         db.commit()
         db.refresh(event)
@@ -748,14 +786,52 @@ async def import_schedule(
     created_count = 0
     now = datetime.now(UTC)
     for t_info in talks_to_create:
+        if not isinstance(t_info, dict):
+            continue
         title = t_info.get("title") or "Untitled Talk"
         room = t_info.get("room") or "Main Hall"
+
+        t_start = _parse_iso_datetime(t_info.get("start") or t_info.get("date"))
+        t_end = _parse_iso_datetime(t_info.get("end"))
+        t_dur = _parse_duration_minutes(
+            t_info.get("duration") or t_info.get("duration_minutes")
+        )
+
+        if t_start and t_end:
+            start_dt = t_start
+            end_dt = t_end
+        elif t_start and t_dur:
+            start_dt = t_start
+            end_dt = t_start + timedelta(minutes=t_dur)
+        elif t_start:
+            start_dt = t_start
+            end_dt = t_start + timedelta(minutes=45)
+        else:
+            dur = t_dur or 45
+            start_dt = now + timedelta(minutes=created_count * dur)
+            end_dt = start_dt + timedelta(minutes=dur)
+
+        existing = (
+            db.query(models.Talk)
+            .filter(
+                models.Talk.event_id == event.id,
+                models.Talk.title == title,
+                models.Talk.start == start_dt,
+            )
+            .first()
+        )
+        if existing:
+            existing.room = room
+            existing.end = end_dt
+            created_count += 1
+            continue
+
         talk = models.Talk(
             event_id=event.id,
             title=title,
             room=room,
-            start=now + timedelta(minutes=created_count * 45),
-            end=now + timedelta(minutes=(created_count + 1) * 45),
+            start=start_dt,
+            end=end_dt,
             status="waiting_for_files",
         )
         db.add(talk)
@@ -780,6 +856,10 @@ async def create_single_talk(
     event_name = (body.get("event_name") or "").strip() or "General Event"
     title = (body.get("title") or "").strip() or "Untitled Session"
     room = (body.get("room") or "").strip() or "Room 1"
+    duration_minutes = (
+        _parse_duration_minutes(body.get("duration_minutes") or body.get("duration"))
+        or 45
+    )
 
     event = db.query(models.Event).filter(models.Event.name == event_name).first()
     if not event:
@@ -792,13 +872,19 @@ async def create_single_talk(
         client.event_ids = list(set(client.event_ids + [event.id]))
         db.commit()
 
-    now = datetime.now(UTC)
+    start_dt = _parse_iso_datetime(body.get("start"))
+    if not start_dt:
+        start_dt = datetime.now(UTC)
+    end_dt = _parse_iso_datetime(body.get("end"))
+    if not end_dt:
+        end_dt = start_dt + timedelta(minutes=duration_minutes)
+
     talk = models.Talk(
         event_id=event.id,
         title=title,
         room=room,
-        start=now,
-        end=now + timedelta(minutes=45),
+        start=start_dt,
+        end=end_dt,
         status="waiting_for_files",
     )
     db.add(talk)

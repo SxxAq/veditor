@@ -236,3 +236,98 @@ def test_ui_post_routes_authenticated_success(client: TestClient, db_session):
     assert res_cookie.status_code == 200
     assert res_cookie.json()["title"] == "Updated Title"
     client.cookies.clear()
+
+
+def test_import_schedule_json_list(client: TestClient, db_session):
+    import uuid
+
+    from app.auth import hash_api_key
+
+    api_key = f"import_test_key_{uuid.uuid4().hex}"
+    client_model = models.Client(hashed_key=hash_api_key(api_key), event_ids=[])
+    db_session.add(client_model)
+    db_session.commit()
+
+    schedule_payload = [
+        {
+            "event_id": 180,
+            "title": "Opening Keynote: Open Source AI Frontiers",
+            "room": "Hall 1",
+            "start": "2026-09-05T09:00:00Z",
+            "end": "2026-09-05T09:45:00Z",
+        },
+        {
+            "event_id": 180,
+            "title": "Building Scalable Video Pipelines with PyAV",
+            "room": "Hall 1",
+            "start": "2026-09-05T10:00:00Z",
+            "end": "2026-09-05T10:45:00Z",
+        },
+        {
+            "event_id": 180,
+            "title": "Modern Microservices Architecture in Python",
+            "room": "Hall 2",
+            "start": "2026-09-05T11:00:00Z",
+            "end": "2026-09-05T11:45:00Z",
+        },
+    ]
+
+    res = client.post(
+        "/studio/schedule/import",
+        json=schedule_payload,
+        headers={"X-API-Key": api_key},
+    )
+    assert res.status_code == 200
+    data = res.json()
+    assert data["status"] == "ok"
+    assert data["imported_count"] == 3
+
+    talks = (
+        db_session.query(models.Talk)
+        .filter(models.Talk.event_id == data["event_id"])
+        .all()
+    )
+    assert len(talks) >= 3
+    keynote = next(
+        t for t in talks if t.title == "Opening Keynote: Open Source AI Frontiers"
+    )
+    assert keynote.room == "Hall 1"
+    assert (
+        keynote.start.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        == "2026-09-05T09:00:00Z"
+    )
+    assert (
+        keynote.end.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        == "2026-09-05T09:45:00Z"
+    )
+
+
+def test_create_single_talk_custom_duration(client: TestClient, db_session):
+    import uuid
+
+    from app.auth import hash_api_key
+
+    api_key = f"single_talk_key_{uuid.uuid4().hex}"
+    client_model = models.Client(hashed_key=hash_api_key(api_key), event_ids=[])
+    db_session.add(client_model)
+    db_session.commit()
+
+    res = client.post(
+        "/studio/talks/create",
+        json={
+            "event_name": f"Event {uuid.uuid4().hex}",
+            "title": "Custom Duration Session",
+            "room": "Auditorium B",
+            "duration_minutes": 25,
+            "start": "2026-09-05T14:00:00Z",
+        },
+        headers={"X-API-Key": api_key},
+    )
+    assert res.status_code == 200
+    talk_id = res.json()["talk_id"]
+
+    talk = db_session.query(models.Talk).filter(models.Talk.id == talk_id).first()
+    assert talk is not None
+    assert talk.title == "Custom Duration Session"
+    assert talk.room == "Auditorium B"
+    assert (talk.end - talk.start).total_seconds() == 25 * 60

@@ -236,6 +236,8 @@ window.submitQuickTalk = async function() {
   const eventName = (document.getElementById('quick-event-name') || {}).value || 'General Conference';
   const title = (document.getElementById('quick-talk-title') || {}).value || '';
   const room = (document.getElementById('quick-talk-room') || {}).value || 'Auditorium A';
+  const duration = parseInt((document.getElementById('quick-talk-duration') || {}).value, 10) || 45;
+  const startVal = (document.getElementById('quick-talk-start') || {}).value || '';
   const btn = document.getElementById('btn-submit-quick-talk');
   const orig = btn ? btn.innerHTML : '';
 
@@ -247,10 +249,20 @@ window.submitQuickTalk = async function() {
   if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spinner spinner-sm"></span> Creating...'; }
 
   try {
+    const payload = {
+      event_name: eventName,
+      title,
+      room,
+      duration_minutes: duration,
+    };
+    if (startVal) {
+      payload.start = new Date(startVal).toISOString();
+    }
+
     const res = await (window.authFetch || fetch)('/studio/talks/create', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ event_name: eventName, title, room }),
+      body: JSON.stringify(payload),
     });
 
     if (!res.ok) {
