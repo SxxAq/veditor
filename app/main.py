@@ -20,7 +20,7 @@ app.include_router(ui.router)
 
 @app.get("/", include_in_schema=False)
 def root():
-    return RedirectResponse(url="/ui")
+    return RedirectResponse(url="/studio")
 
 
 @app.get("/favicon.ico", include_in_schema=False)

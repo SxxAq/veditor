@@ -57,7 +57,7 @@ window.VEditorConfig = window.VEditorConfig || {
       else btn.classList.remove('key-set');
     }
     if (ind) {
-      ind.textContent = hasKey ? 'Key Connected' : 'Set API Key';
+      ind.textContent = hasKey ? 'API Key Saved' : 'Set API Key';
     }
   }
 

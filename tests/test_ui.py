@@ -16,7 +16,7 @@ def client():
 def test_root_redirect(client: TestClient):
     response = client.get("/", follow_redirects=False)
     assert response.status_code == 307
-    assert response.headers["location"] == "/ui"
+    assert response.headers["location"] == "/studio"
 
 
 def test_static_assets(client: TestClient):
@@ -77,7 +77,7 @@ def test_dashboard_page(client: TestClient, db_session):
     db_session.add(talk)
     db_session.commit()
 
-    response = client.get("/ui")
+    response = client.get("/studio")
     assert response.status_code == 200
     assert "text/html" in response.headers.get("content-type", "")
     assert "Test UI Dashboard Talk" in response.text
@@ -103,7 +103,7 @@ def test_talk_studio_page(client: TestClient, db_session):
     db_session.commit()
     db_session.refresh(talk)
 
-    response = client.get(f"/ui/talks/{talk.id}")
+    response = client.get(f"/studio/talks/{talk.id}")
     assert response.status_code == 200
     assert "text/html" in response.headers.get("content-type", "")
     assert "Test Studio Detail Talk" in response.text
@@ -111,7 +111,7 @@ def test_talk_studio_page(client: TestClient, db_session):
 
 
 def test_talk_studio_not_found(client: TestClient):
-    response = client.get("/ui/talks/999999")
+    response = client.get("/studio/talks/999999")
     assert response.status_code == 404
 
 
@@ -124,29 +124,29 @@ def test_media_serving(client: TestClient, tmp_path):
     )
     storage.put("999/preview/preview.mp4", clip)
 
-    response = client.get("/ui/media/999/preview.mp4")
+    response = client.get("/studio/media/999/preview.mp4")
     assert response.status_code == 200
     assert "video/mp4" in response.headers.get("content-type", "")
 
-    not_found = client.get("/ui/media/999/missing.mp4")
+    not_found = client.get("/studio/media/999/missing.mp4")
     assert not_found.status_code == 404
 
 
 def test_ui_post_routes_require_authentication(client: TestClient, db_session):
     """Mutating UI endpoints must return 401 if unauthenticated."""
-    res = client.post("/ui/talks/1/status", json={"status": "waiting_for_files"})
+    res = client.post("/studio/talks/1/status", json={"status": "waiting_for_files"})
     assert res.status_code == 401
 
-    res = client.post("/ui/talks/1/approve")
+    res = client.post("/studio/talks/1/approve")
     assert res.status_code == 401
 
-    res = client.post("/ui/talks/1/reject")
+    res = client.post("/studio/talks/1/reject")
     assert res.status_code == 401
 
-    res = client.post("/ui/talks/1/retry")
+    res = client.post("/studio/talks/1/retry")
     assert res.status_code == 401
 
-    res = client.post("/ui/talks/1/delete")
+    res = client.post("/studio/talks/1/delete")
     assert res.status_code == 401
 
 
@@ -182,7 +182,7 @@ def test_ui_post_routes_event_scoping(client: TestClient, db_session):
     # Attempt mutation with X-API-Key
     headers = {"X-API-Key": api_key}
     res = client.post(
-        f"/ui/talks/{talk_other.id}/status",
+        f"/studio/talks/{talk_other.id}/status",
         json={"status": "needs_work"},
         headers=headers,
     )
@@ -220,7 +220,7 @@ def test_ui_post_routes_authenticated_success(client: TestClient, db_session):
 
     # Header authentication
     res = client.post(
-        f"/ui/talks/{talk.id}/status",
+        f"/studio/talks/{talk.id}/status",
         json={"status": "pending_approval", "note": "Reviewed"},
         headers={"X-API-Key": api_key},
     )
@@ -230,7 +230,7 @@ def test_ui_post_routes_authenticated_success(client: TestClient, db_session):
     # Cookie authentication
     client.cookies.set("veditor_api_key", api_key)
     res_cookie = client.post(
-        f"/ui/talks/{talk.id}/edit",
+        f"/studio/talks/{talk.id}/edit",
         json={"title": "Updated Title", "room": "Hall C"},
     )
     assert res_cookie.status_code == 200

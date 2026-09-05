@@ -52,7 +52,7 @@
 
   <!-- Filter Bar -->
   <div class="filter-bar">
-    <form method="get" action="/ui" style="display:flex;gap:10px;flex-wrap:wrap;width:100%;">
+    <form method="get" action="/studio" style="display:flex;gap:10px;flex-wrap:wrap;width:100%;">
       <div class="search-wrap">
         <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
           <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
@@ -89,7 +89,7 @@
       </button>
 
       {% if q or status_filter %}
-        <a href="/ui" class="btn btn-ghost" id="clear-btn">Clear</a>
+        <a href="/studio" class="btn btn-ghost" id="clear-btn">Clear</a>
       {% endif %}
     </form>
   </div>
@@ -148,7 +148,7 @@
       </thead>
       <tbody>
         {% for talk in talks %}
-        <tr onclick="window.location='/ui/talks/{{ talk.id }}'" data-talk-id="{{ talk.id }}" data-status="{{ talk.status }}">
+        <tr onclick="window.location='/studio/talks/{{ talk.id }}'" data-talk-id="{{ talk.id }}" data-status="{{ talk.status }}">
           <td style="width:36px;padding-left:14px;" onclick="event.stopPropagation()">
             <input type="checkbox" class="talk-checkbox" value="{{ talk.id }}" onchange="updateBulkSelectionUI()">
           </td>
@@ -171,7 +171,7 @@
           </td>
           <td style="text-align:right;padding-right:16px;" onclick="event.stopPropagation()">
             <div style="display:inline-flex;align-items:center;gap:6px;">
-              <a href="/ui/talks/{{ talk.id }}" class="btn btn-ghost btn-sm">
+              <a href="/studio/talks/{{ talk.id }}" class="btn btn-ghost btn-sm">
                 Open Studio
               </a>
               <button class="btn btn-ghost btn-sm" onclick="deleteSingleTalk({{ talk.id }}, '{{ talk.title | escape }}')" title="Delete Talk" style="color:#ef4444;padding:3px 7px;">
@@ -194,7 +194,7 @@
       {% if q or status_filter %}
         <p style="font-size:0.95rem;font-weight:500;color:var(--v-text-primary);margin-bottom:6px;">No matching talks</p>
         <p style="font-size:0.82rem;margin-bottom:14px;">No talks match your current filter or search criteria.</p>
-        <a href="/ui" class="btn btn-ghost btn-sm" style="border:1px solid var(--v-border);">Clear Filters</a>
+        <a href="/studio" class="btn btn-ghost btn-sm" style="border:1px solid var(--v-border);">Clear Filters</a>
       {% else %}
         <p style="font-size:0.95rem;font-weight:500;color:var(--v-text-primary);margin-bottom:6px;">No talks in workspace</p>
         <p style="font-size:0.82rem;">Use the buttons above to import a conference schedule or add a talk.</p>

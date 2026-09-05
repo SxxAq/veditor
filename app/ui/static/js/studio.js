@@ -363,7 +363,7 @@ window.approveTalk = async function(id) {
   const originalHtml = btn ? btn.innerHTML : '';
   if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spinner spinner-sm"></span> Processing Pipeline...'; }
   try {
-    await postUI(`/ui/talks/${id}/approve`, {
+    await postUI(`/studio/talks/${id}/approve`, {
       decision: 'approved',
       note: notes || 'Approved in review studio',
       start_sec: inPointSec,
@@ -383,7 +383,7 @@ window.rejectTalk = async function(id) {
   const originalHtml = btn ? btn.innerHTML : '';
   if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spinner spinner-sm"></span> Rejecting...'; }
   try {
-    await postUI(`/ui/talks/${id}/reject`, { decision: 'rejected', note: notes || 'Rejected in review studio' });
+    await postUI(`/studio/talks/${id}/reject`, { decision: 'rejected', note: notes || 'Rejected in review studio' });
     location.reload();
   } catch (err) {
     alert(`Rejection failed: ${err.message}`);
@@ -396,7 +396,7 @@ window.retryTalk = async function(id) {
   const originalHtml = btn ? btn.innerHTML : '';
   if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spinner spinner-sm"></span> Resetting...'; }
   try {
-    await postUI(`/ui/talks/${id}/retry`);
+    await postUI(`/studio/talks/${id}/retry`);
     location.reload();
   } catch (err) {
     alert(`Retry failed: ${err.message}`);
@@ -406,7 +406,7 @@ window.retryTalk = async function(id) {
 
 window.setTalkStatus = async function(id, newStatus) {
   try {
-    await postUI(`/ui/talks/${id}/status`, { status: newStatus });
+    await postUI(`/studio/talks/${id}/status`, { status: newStatus });
     location.reload();
   } catch (err) {
     alert(`Status update failed: ${err.message}`);
@@ -426,7 +426,7 @@ window.handleVideoFileUpload = async function(e, talkId) {
     const fd = new FormData();
     fd.append('file', file);
 
-    const res = await (window.authFetch || fetch)(`/ui/talks/${talkId}/upload-recording`, {
+    const res = await (window.authFetch || fetch)(`/studio/talks/${talkId}/upload-recording`, {
       method: 'POST',
       body: fd,
     });

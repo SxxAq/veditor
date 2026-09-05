@@ -42,7 +42,7 @@ _env = jinja2.Environment(
 )
 templates = Jinja2Templates(env=_env)
 
-router = APIRouter(prefix="/ui", tags=["ui"])
+router = APIRouter(prefix="/studio", tags=["studio"])
 
 
 def get_ui_client(
@@ -359,18 +359,20 @@ def dashboard(
         all_talks = db.query(models.Talk).all()
 
     all_rooms = sorted({t.room for t in all_talks if t.room})
+    status_counts: dict[str, int] = {}
+    for t in all_talks:
+        status_counts[t.status] = status_counts.get(t.status, 0) + 1
+
     stats = {
         "total": len(all_talks),
-        "pending": sum(1 for t in all_talks if t.status == "pending_approval"),
+        "pending": status_counts.get("pending_approval", 0),
         "processing": sum(
-            1
-            for t in all_talks
-            if t.status
-            in {"cutting", "generating_previews", "transcoding", "uploading"}
+            status_counts.get(s, 0)
+            for s in ("cutting", "generating_previews", "transcoding", "uploading")
         ),
-        "preview": sum(1 for t in all_talks if t.status == "preview"),
-        "done": sum(1 for t in all_talks if t.status == "done"),
-        "broken": sum(1 for t in all_talks if t.status in {"broken", "rejected"}),
+        "preview": status_counts.get("preview", 0),
+        "done": status_counts.get("done", 0),
+        "broken": status_counts.get("broken", 0) + status_counts.get("rejected", 0),
     }
 
     return templates.TemplateResponse(
@@ -462,7 +464,7 @@ def studio(
     for cat, fname, label in asset_defs:
         key = f"{talk.id}/{cat}/{fname}"
         if storage.exists(key):
-            url = f"/ui/media/{talk.id}/{cat}/{fname}"
+            url = f"/studio/media/{talk.id}/{cat}/{fname}"
             if url not in seen_urls:
                 seen_urls.add(url)
                 media_assets.append(
@@ -476,7 +478,7 @@ def studio(
     # Check for any dynamic raw filenames
     for rk in storage.list_keys(f"{talk.id}/raw"):
         fname = Path(rk).name
-        url = f"/ui/media/{talk.id}/raw/{fname}"
+        url = f"/studio/media/{talk.id}/raw/{fname}"
         if url not in seen_urls:
             seen_urls.add(url)
             media_assets.append(
@@ -664,7 +666,7 @@ def generate_talk_preview(
 
     return {
         "status": "ok",
-        "url": f"/ui/media/{talk.id}/preview/preview.mp4",
+        "url": f"/studio/media/{talk.id}/preview/preview.mp4",
         "talk_status": talk.status,
     }
 
@@ -846,7 +848,7 @@ async def upload_talk_recording(
     return {
         "status": "ok",
         "talk_status": talk.status,
-        "url": f"/ui/media/{talk_id}/raw/raw.mp4",
+        "url": f"/studio/media/{talk_id}/raw/raw.mp4",
         "duration": duration,
     }
 

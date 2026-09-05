@@ -27,7 +27,7 @@
 
     <nav class="sidebar-nav">
       <span class="nav-label">Workspace</span>
-      <a href="/ui" class="nav-item {% if request.url.path == '/ui' and not request.query_params.get('status_filter') %}active{% endif %}">
+      <a href="/studio" class="nav-item {% if request.url.path == '/studio' and not request.query_params.get('status_filter') %}active{% endif %}">
         <svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
           <rect x="3" y="3" width="7" height="7"/>
           <rect x="14" y="3" width="7" height="7"/>
@@ -36,27 +36,27 @@
         </svg>
         All Talks
       </a>
-      <a href="/ui?status_filter=pending_approval" class="nav-item {% if request.query_params.get('status_filter') == 'pending_approval' %}active{% endif %}">
+      <a href="/studio?status_filter=pending_approval" class="nav-item {% if request.query_params.get('status_filter') == 'pending_approval' %}active{% endif %}">
         <svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
           <circle cx="12" cy="12" r="10"/>
           <polyline points="12 6 12 12 16 14"/>
         </svg>
         Pending Review (Gate 1)
       </a>
-      <a href="/ui?status_filter=preview" class="nav-item {% if request.query_params.get('status_filter') == 'preview' %}active{% endif %}">
+      <a href="/studio?status_filter=preview" class="nav-item {% if request.query_params.get('status_filter') == 'preview' %}active{% endif %}">
         <svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
           <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
           <circle cx="12" cy="12" r="3"/>
         </svg>
         Preview Ready (Gate 2)
       </a>
-      <a href="/ui?status_filter=done" class="nav-item {% if request.query_params.get('status_filter') == 'done' %}active{% endif %}">
+      <a href="/studio?status_filter=done" class="nav-item {% if request.query_params.get('status_filter') == 'done' %}active{% endif %}">
         <svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
           <polyline points="20 6 9 17 4 12"/>
         </svg>
         Published
       </a>
-      <a href="/ui?status_filter=broken" class="nav-item {% if request.query_params.get('status_filter') == 'broken' %}active{% endif %}">
+      <a href="/studio?status_filter=broken" class="nav-item {% if request.query_params.get('status_filter') == 'broken' %}active{% endif %}">
         <svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
           <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
           <line x1="12" y1="9" x2="12" y2="13"/>

@@ -105,7 +105,7 @@ rows.forEach(row => {
   row.setAttribute('tabindex', '0');
   row.addEventListener('keydown', e => {
     if (e.key === 'Enter' || e.key === ' ') {
-      window.location = `/ui/talks/${row.dataset.talkId}`;
+      window.location = `/studio/talks/${row.dataset.talkId}`;
     }
   });
 });
@@ -155,7 +155,13 @@ window.submitAttachRoomRecording = async function() {
     fd.append('room', roomInput.trim());
     fd.append('file', fileInput.files[0]);
 
-    const res = await (window.authFetch || fetch)('/ui/room/attach-recording', {
+    const urlParams = new URLSearchParams(window.location.search);
+    const eventIdParam = urlParams.get('event_id');
+    if (eventIdParam) {
+      fd.append('event_id', eventIdParam);
+    }
+
+    const res = await (window.authFetch || fetch)('/studio/room/attach-recording', {
       method: 'POST',
       body: fd,
     });
@@ -198,11 +204,11 @@ window.submitScheduleImport = async function() {
     if (fileInput && fileInput.files && fileInput.files[0]) {
       const fd = new FormData();
       fd.append('file', fileInput.files[0]);
-      res = await (window.authFetch || fetch)('/ui/schedule/import', { method: 'POST', body: fd });
+      res = await (window.authFetch || fetch)('/studio/schedule/import', { method: 'POST', body: fd });
     } else if (jsonText.trim()) {
       let parsed;
       try { parsed = JSON.parse(jsonText); } catch { throw new Error('Invalid JSON format'); }
-      res = await (window.authFetch || fetch)('/ui/schedule/import', {
+      res = await (window.authFetch || fetch)('/studio/schedule/import', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(parsed),
@@ -241,7 +247,7 @@ window.submitQuickTalk = async function() {
   if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spinner spinner-sm"></span> Creating...'; }
 
   try {
-    const res = await (window.authFetch || fetch)('/ui/talks/create', {
+    const res = await (window.authFetch || fetch)('/studio/talks/create', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ event_name: eventName, title, room }),
@@ -253,7 +259,7 @@ window.submitQuickTalk = async function() {
     }
 
     const data = await res.json();
-    window.location = `/ui/talks/${data.talk_id}`;
+    window.location = `/studio/talks/${data.talk_id}`;
   } catch (err) {
     alert(`Failed to create talk: ${err.message}`);
     if (btn) { btn.disabled = false; btn.innerHTML = orig; }
@@ -267,7 +273,7 @@ window.deleteSingleTalk = async function(id, title) {
   }
 
   try {
-    const res = await (window.authFetch || fetch)(`/ui/talks/${id}/delete`, { method: 'POST' });
+    const res = await (window.authFetch || fetch)(`/studio/talks/${id}/delete`, { method: 'POST' });
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
       throw new Error(err.detail || `Server returned ${res.status}`);
@@ -332,7 +338,7 @@ window.submitBulkDelete = async function() {
   if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spinner spinner-sm"></span> Deleting...'; }
 
   try {
-    const res = await (window.authFetch || fetch)('/ui/talks/bulk-delete', {
+    const res = await (window.authFetch || fetch)('/studio/talks/bulk-delete', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ talk_ids: selected }),
