@@ -1,3 +1,4 @@
+import logging
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
@@ -18,6 +19,8 @@ from app.queue import heavy_queue, light_queue
 from app.states import advance
 from app.storage import StorageBackend, get_storage_backend
 from app.tasks import STAGE_CONFIG, job_cut, job_detect
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(
     prefix="/talks",
@@ -127,6 +130,11 @@ def get_talk(
     "/{talk_id}/recordings",
     response_model=schemas.TalkRead,
     status_code=status.HTTP_202_ACCEPTED,
+    responses={
+        status.HTTP_507_INSUFFICIENT_STORAGE: {
+            "description": "Insufficient storage to ingest recording"
+        }
+    },
 )
 def ingest_recording(
     talk_id: int,
@@ -162,6 +170,12 @@ def ingest_recording(
             detail=str(exc),
         ) from exc
     except InsufficientStorageError as exc:
+        logger.warning(
+            "Insufficient storage to ingest recording for talk %s: required %s bytes, available %s bytes",
+            talk_id,
+            exc.required_bytes,
+            exc.available_bytes,
+        )
         raise HTTPException(
             status_code=status.HTTP_507_INSUFFICIENT_STORAGE,
             detail=str(exc),

@@ -455,40 +455,41 @@ def test_post_recording_insufficient_storage_returns_507():
     app.dependency_overrides[get_db] = lambda: mock_db
     app.dependency_overrides[get_storage_backend] = lambda: fake_storage
 
-    mock_talk = models.Talk(
-        id=1,
-        event_id=1,
-        title="Test Talk",
-        room="Room 1",
-        start=datetime.now(UTC),
-        end=datetime.now(UTC),
-        status="waiting_for_files",
-    )
-    mock_db.query.return_value.filter.return_value.first.return_value = mock_talk
-
-    with (
-        patch(
-            "app.routes.talks.stage_recording",
-            side_effect=InsufficientStorageError(
-                required_bytes=3000, available_bytes=1000
-            ),
-        ),
-        patch("app.routes.talks.light_queue.enqueue") as mock_enqueue,
-    ):
-        response = client.post(
-            "/talks/1/recordings",
-            json={"source_path": "/valid/path.mp4"},
-            headers={"X-API-Key": "valid_key"},
+    try:
+        mock_talk = models.Talk(
+            id=1,
+            event_id=1,
+            title="Test Talk",
+            room="Room 1",
+            start=datetime.now(UTC),
+            end=datetime.now(UTC),
+            status="waiting_for_files",
         )
-        assert response.status_code == 507
-        assert "Insufficient storage" in response.json()["detail"]
-        assert "3000" in response.json()["detail"]
-        assert "1000" in response.json()["detail"]
-        assert mock_talk.status == "waiting_for_files"
-        mock_enqueue.assert_not_called()
-        mock_db.commit.assert_not_called()
+        mock_db.query.return_value.filter.return_value.first.return_value = mock_talk
 
-    app.dependency_overrides.clear()
+        with (
+            patch(
+                "app.routes.talks.stage_recording",
+                side_effect=InsufficientStorageError(
+                    required_bytes=3000, available_bytes=1000
+                ),
+            ),
+            patch("app.routes.talks.light_queue.enqueue") as mock_enqueue,
+        ):
+            response = client.post(
+                "/talks/1/recordings",
+                json={"source_path": "/valid/path.mp4"},
+                headers={"X-API-Key": "valid_key"},
+            )
+            assert response.status_code == 507
+            assert "Insufficient storage" in response.json()["detail"]
+            assert "3000" in response.json()["detail"]
+            assert "1000" in response.json()["detail"]
+            assert mock_talk.status == "waiting_for_files"
+            mock_enqueue.assert_not_called()
+            mock_db.commit.assert_not_called()
+    finally:
+        app.dependency_overrides.clear()
 
 
 def test_post_recording_success_enqueues_detect():

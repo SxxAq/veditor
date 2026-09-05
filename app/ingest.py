@@ -1,3 +1,4 @@
+import math
 from pathlib import Path
 
 import av
@@ -75,16 +76,16 @@ def stage_recording(
     if not resolved_path or not resolved_path.is_file() or not matched_root:
         raise IngestPathRejectedError("Invalid or missing ingest path")
 
-    validate_media_file(resolved_path)
-
     file_size = resolved_path.stat().st_size
-    required_bytes = int(file_size * settings.disk_guard_multiplier)
+    required_bytes = math.ceil(file_size * settings.disk_guard_multiplier)
     available_bytes = backend.free_bytes()
     if available_bytes < required_bytes:
         raise InsufficientStorageError(
             required_bytes=required_bytes,
             available_bytes=available_bytes,
         )
+
+    validate_media_file(resolved_path)
 
     rel_path = resolved_path.relative_to(matched_root)
     key = f"{talk_id}/raw/{rel_path}"
