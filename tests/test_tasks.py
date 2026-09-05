@@ -464,11 +464,15 @@ def test_transcode_progress_callback_updates_job_progress(dummy_talk, mock_stora
         assert db_ctx.open_sessions == 0, "DB session was open during transcode!"
         if on_progress:
             on_progress(0.25)
-            progress_history.append(jobs[100].progress_pct)
+            assert db_ctx.open_sessions == 0
+            job = next(iter(jobs.values()))
+            progress_history.append(job.progress_pct)
             on_progress(0.60)
-            progress_history.append(jobs[100].progress_pct)
+            assert db_ctx.open_sessions == 0
+            progress_history.append(job.progress_pct)
             on_progress(0.95)
-            progress_history.append(jobs[100].progress_pct)
+            assert db_ctx.open_sessions == 0
+            progress_history.append(job.progress_pct)
 
     with (
         patch("app.tasks.SessionLocal", side_effect=db_ctx),

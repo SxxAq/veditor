@@ -372,7 +372,7 @@ def job_transcode(
                 talk_id=talk_id,
                 kind="transcode",
                 status="running",
-                progress_pct=0.0,
+                progress_pct=None,
             )
             db.add(job)
             db.commit()
