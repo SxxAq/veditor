@@ -26,7 +26,8 @@ def test_advance_illegal_transitions():
         "pending_bounds": "pending_approval",
         "cutting": "needs_work",
         "generating_previews": "transcoding",
-        "preview": "done",
+        "preview": "transcoding",  # must go via pending_intro_outro now
+        "pending_intro_outro": "cutting",
         "transcoding": "done",
         "uploading": "rejected",
         "needs_work": "preview",
@@ -43,6 +44,11 @@ def test_advance_illegal_transitions():
         assert exc_info.value.current_state == current_state
         assert exc_info.value.new_state == invalid_next
         assert talk.status == current_state  # State should not mutate
+
+    # Rejection at preview gate resets to pending_bounds; direct rejection is illegal
+    talk = DummyTalk("preview")
+    with pytest.raises(InvalidTransitionError):
+        advance(talk, "rejected")
 
 
 def test_phase4_happy_path():
@@ -84,3 +90,10 @@ def test_explicit_paths_per_acceptance_criteria():
     talk_reset = DummyTalk("preview")
     advance(talk_reset, "pending_bounds")
     assert talk_reset.status == "pending_bounds"
+
+    # preview → pending_intro_outro → transcoding (Phase 5 blocking intro/outro gate)
+    talk_intro_outro = DummyTalk("preview")
+    advance(talk_intro_outro, "pending_intro_outro")
+    assert talk_intro_outro.status == "pending_intro_outro"
+    advance(talk_intro_outro, "transcoding")
+    assert talk_intro_outro.status == "transcoding"
