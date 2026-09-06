@@ -44,7 +44,7 @@ def handle_approve(
     db: Session,
     storage: StorageBackend | None = None,
 ) -> schemas.ReviewResponse:
-    return _record_review_and_advance(talk, payload, "transcoding", db)
+    return _record_review_and_advance(talk, payload, "pending_intro_outro", db)
 
 
 def handle_needs_work(

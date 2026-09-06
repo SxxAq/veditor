@@ -244,6 +244,7 @@ RAW_PREVIEW_ALLOWED_STATES = frozenset(
         "generating_previews",
         "preview",
         "needs_work",
+        "pending_intro_outro",
         "transcoding",
         "uploading",
         "done",
