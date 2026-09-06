@@ -377,3 +377,50 @@ def test_disk_guard_multiplier_validation():
 
     s = Settings(disk_guard_multiplier=2.5)
     assert s.disk_guard_multiplier == 2.5
+
+
+def test_stage_recording_decimal_precision(ingest_root, mock_backend):
+    """Verify that fractional multipliers such as 1.1 do not suffer from float inaccuracies."""
+    target = ingest_root / "video.mp4"
+    create_test_video(target)
+    file_size = target.stat().st_size
+
+    original_multiplier = settings.disk_guard_multiplier
+    try:
+        settings.disk_guard_multiplier = 1.1
+        from decimal import Decimal, ROUND_CEILING
+
+        expected_bytes = int(
+            (Decimal(file_size) * Decimal("1.1")).to_integral_value(
+                rounding=ROUND_CEILING
+            )
+        )
+        mock_backend.free_bytes.return_value = expected_bytes - 1
+
+        payload = RecordingIngestRequest(relative_key="video.mp4")
+        with pytest.raises(InsufficientStorageError) as exc_info:
+            stage_recording(1, payload, mock_backend)
+
+        assert exc_info.value.required_bytes == expected_bytes
+    finally:
+        settings.disk_guard_multiplier = original_multiplier
+
+
+def test_stage_recording_extreme_multiplier_no_overflow(ingest_root, mock_backend):
+    """Verify that extreme float multipliers (e.g. 1e308) do not cause OverflowError and raise InsufficientStorageError."""
+    target = ingest_root / "video.mp4"
+    create_test_video(target)
+
+    original_multiplier = settings.disk_guard_multiplier
+    try:
+        settings.disk_guard_multiplier = 1e308
+        mock_backend.free_bytes.return_value = 1024 * 1024 * 1024  # 1 GB available
+
+        payload = RecordingIngestRequest(relative_key="video.mp4")
+        with pytest.raises(InsufficientStorageError) as exc_info:
+            stage_recording(1, payload, mock_backend)
+
+        assert exc_info.value.available_bytes == 1024 * 1024 * 1024
+        assert exc_info.value.required_bytes > 1024 * 1024 * 1024
+    finally:
+        settings.disk_guard_multiplier = original_multiplier

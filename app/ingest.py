@@ -1,4 +1,4 @@
-import math
+from decimal import Decimal, ROUND_CEILING
 from pathlib import Path
 
 import av
@@ -77,7 +77,11 @@ def stage_recording(
         raise IngestPathRejectedError("Invalid or missing ingest path")
 
     file_size = resolved_path.stat().st_size
-    required_bytes = math.ceil(file_size * settings.disk_guard_multiplier)
+    required_bytes = int(
+        (
+            Decimal(file_size) * Decimal(str(settings.disk_guard_multiplier))
+        ).to_integral_value(rounding=ROUND_CEILING)
+    )
     available_bytes = backend.free_bytes()
     if available_bytes < required_bytes:
         raise InsufficientStorageError(
