@@ -388,7 +388,7 @@ def test_stage_recording_decimal_precision(ingest_root, mock_backend):
     original_multiplier = settings.disk_guard_multiplier
     try:
         settings.disk_guard_multiplier = 1.1
-        from decimal import Decimal, ROUND_CEILING
+        from decimal import ROUND_CEILING, Decimal
 
         expected_bytes = int(
             (Decimal(file_size) * Decimal("1.1")).to_integral_value(
