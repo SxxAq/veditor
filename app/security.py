@@ -273,7 +273,8 @@ def decode_sso_token(token: str) -> dict | None:
             return None
         if payload.get("scope_type") not in ("event", "talk"):
             return None
-        if not isinstance(payload.get("scope_id"), int):
+        scope_id = payload.get("scope_id")
+        if not isinstance(scope_id, int) or isinstance(scope_id, bool) or scope_id <= 0:
             return None
         if payload.get("role") not in ("organizer", "speaker"):
             return None

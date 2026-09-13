@@ -69,7 +69,6 @@ def _authorize_studio_talk(
     talk_id: int,
     request: Request,
     db: Session,
-    client: models.Client | None = None,
     not_found_detail: str = "Talk not found",
 ) -> models.Talk:
     """
@@ -298,6 +297,7 @@ def dashboard(
                 status_code=status.HTTP_303_SEE_OTHER,
             )
         scoped_event_id = sso_user["scope_id"]
+        event_id = scoped_event_id
         user_events = (
             db.query(models.Event).filter(models.Event.id == scoped_event_id).all()
         )

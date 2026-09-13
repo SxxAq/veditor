@@ -340,7 +340,7 @@ def raw_preview(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Talk not found"
         )
-    check_event_access(talk.event_id, user, db)
+    check_talk_access(talk, user, db)
 
     if talk.status not in RAW_PREVIEW_ALLOWED_STATES:
         raise HTTPException(

@@ -1,7 +1,7 @@
 """Comprehensive test suite for scoped SSO tokens and external client handoff."""
 
 from datetime import UTC, datetime
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi import HTTPException
@@ -25,6 +25,7 @@ from app.security import (
     create_sso_token,
     decode_sso_token,
 )
+from app.storage import get_storage_backend
 
 client = TestClient(app)
 
@@ -458,6 +459,137 @@ def test_sso_speaker_cannot_review_other_talk(mock_db):
         cookies={"veditor_session": talk_token},
     )
     assert response.status_code == 403
+
+
+def test_sso_speaker_submits_cut_bounds_success(mock_db):
+    """Talk-scoped speaker can submit cut bounds for their scoped talk."""
+    talk_token = create_sso_token(scope_type="talk", scope_id=10, role="speaker")
+    mock_talk = models.Talk(
+        id=10,
+        event_id=1,
+        title="Keynote",
+        room="Main",
+        start=datetime.now(UTC),
+        end=datetime.now(UTC),
+        status="pending_bounds",
+        raw_duration_seconds=3600.0,
+    )
+    app.dependency_overrides[get_db] = lambda: mock_db
+    mock_db.query.return_value.filter.return_value.first.return_value = mock_talk
+
+    mock_storage = MagicMock()
+    mock_storage.list_keys.return_value = ["10/raw/recording.mp4"]
+    app.dependency_overrides[get_storage_backend] = lambda: mock_storage
+
+    with patch("app.routes.talks.light_queue.enqueue") as mock_enqueue:
+        response = client.post(
+            "/talks/10/cut",
+            json={"cut_start": "00:01:00", "cut_end": "00:30:00"},
+            headers={"X-SSO-Token": talk_token},
+        )
+        assert response.status_code == 202
+        assert mock_talk.status == "cutting"
+        assert mock_talk.cut_start == 60.0
+        assert mock_talk.cut_end == 1800.0
+        mock_enqueue.assert_called_once()
+
+
+def test_sso_speaker_cannot_submit_cut_bounds_other_talk(mock_db):
+    """Talk-scoped speaker cannot submit cut bounds for another talk."""
+    talk_token = create_sso_token(scope_type="talk", scope_id=10, role="speaker")
+    mock_talk11 = models.Talk(
+        id=11,
+        event_id=1,
+        title="Other Talk",
+        room="Main",
+        start=datetime.now(UTC),
+        end=datetime.now(UTC),
+        status="pending_bounds",
+        raw_duration_seconds=3600.0,
+    )
+    app.dependency_overrides[get_db] = lambda: mock_db
+    mock_db.query.return_value.filter.return_value.first.return_value = mock_talk11
+
+    response = client.post(
+        "/talks/11/cut",
+        json={"cut_start": "00:01:00", "cut_end": "00:30:00"},
+        headers={"X-SSO-Token": talk_token},
+    )
+    assert response.status_code == 403
+
+
+def test_sso_speaker_raw_preview_success(mock_db):
+    """Talk-scoped speaker can fetch raw preview URL for their scoped talk."""
+    talk_token = create_sso_token(scope_type="talk", scope_id=10, role="speaker")
+    mock_talk = models.Talk(
+        id=10,
+        event_id=1,
+        title="Keynote",
+        room="Main",
+        start=datetime.now(UTC),
+        end=datetime.now(UTC),
+        status="pending_bounds",
+    )
+    app.dependency_overrides[get_db] = lambda: mock_db
+    mock_db.query.return_value.filter.return_value.first.return_value = mock_talk
+
+    mock_storage = MagicMock()
+    mock_storage.list_keys.return_value = ["10/raw/recording.mp4"]
+    mock_storage.url.return_value = "http://storage/10/raw/recording.mp4"
+    app.dependency_overrides[get_storage_backend] = lambda: mock_storage
+
+    response = client.get(
+        "/talks/10/raw-preview",
+        headers={"X-SSO-Token": talk_token},
+    )
+    assert response.status_code == 200
+    assert response.json() == {"url": "http://storage/10/raw/recording.mp4"}
+
+
+def test_sso_speaker_raw_preview_other_talk_forbidden(mock_db):
+    """Talk-scoped speaker cannot fetch raw preview URL for another talk."""
+    talk_token = create_sso_token(scope_type="talk", scope_id=10, role="speaker")
+    mock_talk11 = models.Talk(
+        id=11,
+        event_id=1,
+        title="Other Talk",
+        room="Main",
+        start=datetime.now(UTC),
+        end=datetime.now(UTC),
+        status="pending_bounds",
+    )
+    app.dependency_overrides[get_db] = lambda: mock_db
+    mock_db.query.return_value.filter.return_value.first.return_value = mock_talk11
+
+    response = client.get(
+        "/talks/11/raw-preview",
+        headers={"X-SSO-Token": talk_token},
+    )
+    assert response.status_code == 403
+
+
+def test_studio_dashboard_sso_session_binds_event_id_to_template_context(mock_db):
+    """When event SSO accesses /studio without ?event_id, template context receives scoped event_id."""
+    event_token = create_sso_token(scope_type="event", scope_id=42, role="organizer")
+    app.dependency_overrides[get_db] = lambda: mock_db
+
+    t = models.Talk(
+        id=1,
+        event_id=42,
+        title="Keynote",
+        room="Room 1",
+        start=datetime.now(UTC),
+        end=datetime.now(UTC),
+        status="done",
+    )
+    mock_db.query.return_value.filter.return_value.all.return_value = [t]
+    mock_db.query.return_value.filter.return_value.first.return_value = models.Event(
+        id=42, name="Scoped Event"
+    )
+
+    response = client.get("/studio", cookies={"veditor_session": event_token})
+    assert response.status_code == 200
+    assert '<input type="hidden" name="event_id" value="42">' in response.text
 
 
 # ── 6. Studio Landing Flow and Template Gating ────────────────────────────────

@@ -470,15 +470,64 @@ def test_decode_sso_token_malformed_claims():
             "scope_type": "event",
             "scope_id": "not-int",
             "role": "organizer",
+            "exp": 9999999999,
         },
         key=secret,
         algorithm="HS256",
     )
     assert decode_sso_token(bad_tok) is None
 
+    # Boolean scope_id (isinstance(True, int) is True in Python, must be rejected)
+    bad_tok_bool = jwt.encode(
+        {
+            "type": "sso",
+            "scope_type": "event",
+            "scope_id": True,
+            "role": "organizer",
+            "exp": 9999999999,
+        },
+        key=secret,
+        algorithm="HS256",
+    )
+    assert decode_sso_token(bad_tok_bool) is None
+
+    # Zero scope_id (must be positive)
+    bad_tok_zero = jwt.encode(
+        {
+            "type": "sso",
+            "scope_type": "event",
+            "scope_id": 0,
+            "role": "organizer",
+            "exp": 9999999999,
+        },
+        key=secret,
+        algorithm="HS256",
+    )
+    assert decode_sso_token(bad_tok_zero) is None
+
+    # Negative scope_id (must be positive)
+    bad_tok_neg = jwt.encode(
+        {
+            "type": "sso",
+            "scope_type": "event",
+            "scope_id": -5,
+            "role": "organizer",
+            "exp": 9999999999,
+        },
+        key=secret,
+        algorithm="HS256",
+    )
+    assert decode_sso_token(bad_tok_neg) is None
+
     # Invalid scope_type
     bad_tok2 = jwt.encode(
-        {"type": "sso", "scope_type": "invalid", "scope_id": 1, "role": "organizer"},
+        {
+            "type": "sso",
+            "scope_type": "invalid",
+            "scope_id": 1,
+            "role": "organizer",
+            "exp": 9999999999,
+        },
         key=secret,
         algorithm="HS256",
     )
@@ -486,7 +535,13 @@ def test_decode_sso_token_malformed_claims():
 
     # Invalid role
     bad_tok3 = jwt.encode(
-        {"type": "sso", "scope_type": "event", "scope_id": 1, "role": "superadmin"},
+        {
+            "type": "sso",
+            "scope_type": "event",
+            "scope_id": 1,
+            "role": "superadmin",
+            "exp": 9999999999,
+        },
         key=secret,
         algorithm="HS256",
     )
