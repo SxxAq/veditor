@@ -575,6 +575,16 @@ def test_list_events_sso_scoping(mock_db):
     assert len(data) == 1
     assert data[0]["id"] == 42
 
+    # Verify query filter expression enforces Event scoping predicate
+    event_filter_args = mock_db.query.return_value.filter.call_args.args
+    assert any(
+        getattr(e, "left", None) is not None
+        and e.left.name == "id"
+        and e.left.table.name == "events"
+        and getattr(getattr(e, "right", None), "value", None) == 42
+        for e in event_filter_args
+    ), "Expected Event query to filter by models.Event.id == user.scope_id"
+
     # Talk SSO is forbidden
     resp = client.get("/events", headers={"X-SSO-Token": talk_token})
     assert resp.status_code == 403
@@ -595,10 +605,16 @@ def test_bulk_delete_talks_sso_scoping(mock_db):
     )
     assert resp.status_code == 403
 
-    # Event SSO filters by Talk.event_id == user.scope_id
+    # Event SSO filters strictly by Talk.event_id == user.scope_id
+    talk_query = MagicMock()
+    delete_query = MagicMock()
+    mock_db.query.side_effect = lambda m: (
+        talk_query if m == models.Talk else delete_query
+    )
+
     t1 = models.Talk(id=1, event_id=1, status="done")
-    mock_db.query.return_value.filter.return_value.all.return_value = [t1]
-    mock_db.query.return_value.filter.return_value.delete.return_value = 1
+    talk_query.filter.return_value.all.return_value = [t1]
+    delete_query.filter.return_value.delete.return_value = 1
 
     resp = client.post(
         "/talks/bulk-delete",
@@ -607,6 +623,23 @@ def test_bulk_delete_talks_sso_scoping(mock_db):
     )
     assert resp.status_code == 200
     assert resp.json()["deleted_count"] == 1
+
+    # Verify query filter expressions enforce SSO event scoping predicate
+    assert talk_query.filter.called
+    filter_args = talk_query.filter.call_args.args
+    assert any(
+        getattr(e, "left", None) is not None
+        and e.left.name == "event_id"
+        and e.left.table.name == "talks"
+        and getattr(getattr(e, "right", None), "value", None) == 1
+        for e in filter_args
+    ), "Expected Talk query to filter by models.Talk.event_id == user.scope_id"
+    assert any(
+        getattr(e, "left", None) is not None
+        and e.left.name == "id"
+        and e.left.table.name == "talks"
+        for e in filter_args
+    ), "Expected Talk query to filter by models.Talk.id.in_(payload.talk_ids)"
 
 
 def test_import_schedule_sso_scoping(mock_db):
