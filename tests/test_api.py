@@ -1624,13 +1624,35 @@ def test_e2e_needs_work_review_loop():
             _clear_deps()
 
 
-def test_e2e_reject_flow_and_review_persistence():
-    """Verify initial approve reject and speaker review reject paths with persistence."""
+def test_e2e_initial_approval_reject_flow():
+    """Verify initial approve reject transitions talk from pending_approval to terminal rejected."""
+    mock_db = MagicMock()
+    talk = _mock_talk(talk_id=1, status="pending_approval")
+
+    mock_db.query.return_value.filter.return_value.first.return_value = talk
+    mock_db.__enter__.return_value = mock_db
+    mock_db.__exit__.return_value = None
+
+    _setup_deps(mock_db, event_ids=[1])
+
+    try:
+        r1 = client.post(
+            "/talks/1/approve",
+            json={"decision": "reject"},
+            headers={"X-API-Key": "valid"},
+        )
+        assert r1.status_code == 200
+        assert talk.status == "rejected"
+    finally:
+        _clear_deps()
+
+
+def test_e2e_speaker_review_reject_and_storage_cleanup():
+    """Verify speaker review reject clears cut bounds, resets to pending_bounds, and deletes staging storage."""
     mock_db = MagicMock()
     mock_storage = MagicMock()
-    talk1 = _mock_talk(talk_id=1, status="pending_approval")
-    talk2 = _mock_talk(
-        talk_id=2,
+    talk = _mock_talk(
+        talk_id=1,
         status="preview",
         cut_start=10.0,
         cut_end=1800.0,
@@ -1640,21 +1662,8 @@ def test_e2e_reject_flow_and_review_persistence():
     def query_mock(model):
         q = MagicMock()
         if model == models.Talk:
-
-            def filter_side_effect(*criteria):
-                fq = MagicMock()
-                # Determine which talk is queried by talk_id criteria
-                tid = None
-                for c in criteria:
-                    if hasattr(c, "right") and hasattr(c.right, "value"):
-                        tid = c.right.value
-                        break
-                selected_talk = talk2 if tid == 2 else talk1
-                fq.first.return_value = selected_talk
-                fq.with_for_update.return_value.first.return_value = selected_talk
-                return fq
-
-            q.filter.side_effect = filter_side_effect
+            q.filter.return_value.first.return_value = talk
+            q.filter.return_value.with_for_update.return_value.first.return_value = talk
         elif model == models.Review:
             q.filter.return_value.all.side_effect = lambda: reviews
         return q
@@ -1675,30 +1684,20 @@ def test_e2e_reject_flow_and_review_persistence():
     _setup_deps(mock_db, mock_storage, event_ids=[1])
 
     try:
-        # 1. Initial review reject from pending_approval -> transitions talk to terminal 'rejected'
-        r1 = client.post(
-            "/talks/1/approve",
-            json={"decision": "reject"},
-            headers={"X-API-Key": "valid"},
-        )
-        assert r1.status_code == 200
-        assert talk1.status == "rejected"
-
-        # 2. Speaker review reject from preview -> clears cut bounds and resets to pending_bounds
-        r2 = client.post(
-            "/talks/2/review",
+        r = client.post(
+            "/talks/1/review",
             json={"decision": "reject", "note": "Recording unsuitable"},
             headers={"X-API-Key": "valid"},
         )
-        assert r2.status_code == 200
-        assert talk2.status == "pending_bounds"
-        assert talk2.cut_start is None
-        assert talk2.cut_end is None
+        assert r.status_code == 200
+        assert talk.status == "rejected"
+        assert talk.cut_start is None
+        assert talk.cut_end is None
         assert len(reviews) == 1
         assert reviews[0].decision == "reject"
         assert reviews[0].note == "Recording unsuitable"
-        mock_storage.delete.assert_any_call("2/cut")
-        mock_storage.delete.assert_any_call("2/preview")
+        mock_storage.delete.assert_any_call("1/cut")
+        mock_storage.delete.assert_any_call("1/preview")
     finally:
         _clear_deps()
 

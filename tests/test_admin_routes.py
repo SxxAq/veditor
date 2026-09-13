@@ -113,7 +113,7 @@ def test_admin_users_list_success_and_pagination(client: TestClient, db_session)
     token = create_session_token(admin_user.id, admin_user.role)
     client.cookies.set("veditor_session", token)
 
-    res = client.get("/admin/users?skip=0&limit=10")
+    res = client.get("/admin/users?skip=0&limit=100")
     assert res.status_code == 200
     data = res.json()
     assert isinstance(data, list)
