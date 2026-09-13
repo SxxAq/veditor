@@ -9,7 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app import models, schemas
-from app.auth import get_client
+from app.auth import CurrentUser, get_client, get_current_user
 from app.db import get_db
 from app.main import app
 from app.review_handlers import (
@@ -76,13 +76,13 @@ def preview_talk():
 
 
 def test_review_unauthorized():
-    """POST /talks/{id}/review without API key returns 401."""
+    """POST /talks/{id}/review without credentials returns 401."""
     response = client.post(
         "/talks/1/review",
         json={"decision": "approve"},
     )
     assert response.status_code == 401
-    assert response.json()["detail"] == "Missing API Key"
+    assert response.json()["detail"] == "Not authenticated"
 
 
 def test_review_invalid_decision_returns_422_without_db_query(mock_db):
@@ -180,8 +180,8 @@ def test_review_conflict_non_preview_state(mock_db, preview_talk, invalid_status
         ("approve", "Looks great!", "pending_intro_outro"),
         ("needs_work", None, "pending_bounds"),
         ("needs_work", "Audio is cut off at the start", "pending_bounds"),
-        ("reject", None, "pending_bounds"),
-        ("reject", "Not suitable for publication", "pending_bounds"),
+        ("reject", None, "rejected"),
+        ("reject", "Not suitable for publication", "rejected"),
     ],
 )
 def test_review_valid_decisions_success(
@@ -297,25 +297,26 @@ def test_handlers_direct_persistence_and_advance(preview_talk, mock_db):
     assert resp_work.review.decision == "needs_work"
     assert resp_work.review.note == "Fix cut"
 
-    # Reset talk status for reject test -> pending_bounds
+    # Reset talk status for reject test -> rejected
     preview_talk.status = "preview"
     req_reject = schemas.ReviewRequest(
         decision=schemas.ReviewDecision.reject, note="Reset bounds"
     )
     resp_reject = handle_reject(preview_talk, req_reject, mock_db)
     assert resp_reject.talk.id == preview_talk.id
-    assert resp_reject.talk.status == "pending_bounds"
+    assert resp_reject.talk.status == "rejected"
     assert resp_reject.talk.cut_start is None
     assert resp_reject.talk.cut_end is None
     assert preview_talk.cut_start is None
     assert preview_talk.cut_end is None
+    assert preview_talk.status == "rejected"
     assert resp_reject.review is not None
     assert resp_reject.review.decision == "reject"
     assert resp_reject.review.note == "Reset bounds"
 
 
 def test_handle_reject_clears_cut_bounds_reset_to_raw(mock_db, fake_storage):
-    """Rejecting a talk in preview clears cut bounds, resets to pending_bounds, purges cut/preview files, and enqueues no jobs."""
+    """Rejecting a talk in preview clears cut bounds, transitions to rejected, purges cut/preview files, and enqueues no jobs."""
     talk = models.Talk(
         id=42,
         event_id=1,
@@ -349,7 +350,7 @@ def test_handle_reject_clears_cut_bounds_reset_to_raw(mock_db, fake_storage):
         )
         assert response.status_code == 200
         data = response.json()
-        assert data["talk"]["status"] == "pending_bounds"
+        assert data["talk"]["status"] == "rejected"
         assert data["talk"]["cut_start"] is None
         assert data["talk"]["cut_end"] is None
         assert data["talk"]["raw_duration_seconds"] == 120.0
@@ -357,7 +358,7 @@ def test_handle_reject_clears_cut_bounds_reset_to_raw(mock_db, fake_storage):
         assert data["review"]["note"] == "Bounds inaccurate, reset to raw"
         assert talk.cut_start is None
         assert talk.cut_end is None
-        assert talk.status == "pending_bounds"
+        assert talk.status == "rejected"
 
         assert not fake_storage.exists("42/cut/cut.mp4")
         assert not fake_storage.exists("42/preview/preview.mp4")
@@ -387,6 +388,9 @@ def test_handle_reject_storage_delete_error_resilient(mock_db):
     mock_storage.delete.side_effect = [
         RuntimeError("Storage connection failed"),
         None,
+        None,
+        None,
+        None,
     ]
 
     app.dependency_overrides[get_client] = lambda: mock_client
@@ -400,18 +404,21 @@ def test_handle_reject_storage_delete_error_resilient(mock_db):
     )
     assert response.status_code == 200
     data = response.json()
-    assert data["talk"]["status"] == "pending_bounds"
+    assert data["talk"]["status"] == "rejected"
     assert data["talk"]["cut_start"] is None
     assert data["talk"]["cut_end"] is None
     assert data["review"]["decision"] == "reject"
-    assert talk.status == "pending_bounds"
+    assert talk.status == "rejected"
     assert talk.cut_start is None
     assert talk.cut_end is None
 
-    assert mock_storage.delete.call_count == 2
+    assert mock_storage.delete.call_count == 5
     assert mock_storage.delete.call_args_list == [
         mock_call("42/cut"),
         mock_call("42/preview"),
+        mock_call("42/assemble"),
+        mock_call("42/intro"),
+        mock_call("42/outro"),
     ]
 
 
@@ -855,3 +862,123 @@ def test_needs_work_subsequent_cut_overwrites_outputs():
     assert fake_storage.get("1/raw/video.mp4").read_bytes() == (
         b"original raw video bytes"
     )
+
+
+def test_review_human_user_role_forbidden(mock_db, preview_talk):
+    """POST /talks/{id}/review returns 403 if human caller has role 'user'."""
+    mock_db.query.return_value.filter.return_value.first.return_value = preview_talk
+    app.dependency_overrides[get_current_user] = lambda: CurrentUser(
+        user_id=10, email="user@example.com", role="user", source="cookie", event_ids=[]
+    )
+    app.dependency_overrides[get_db] = lambda: mock_db
+
+    response = client.post(
+        "/talks/1/review",
+        json={"decision": "approve"},
+    )
+    assert response.status_code == 403
+    assert "Operation requires minimum role 'organizer'" in response.json()["detail"]
+
+
+def test_review_human_organizer_unowned_event_forbidden(mock_db, preview_talk):
+    """POST /talks/{id}/review returns 403 if organizer does not own the event."""
+    unowned_event = models.Event(id=1, name="Other Event", created_by_user_id=999)
+
+    def mock_query(model):
+        m = MagicMock()
+        if model == models.Event:
+            m.filter.return_value.first.return_value = unowned_event
+        else:
+            m.filter.return_value.first.return_value = preview_talk
+            m.filter.return_value.with_for_update.return_value = m.filter.return_value
+        return m
+
+    mock_db.query.side_effect = mock_query
+
+    app.dependency_overrides[get_current_user] = lambda: CurrentUser(
+        user_id=10,
+        email="org@example.com",
+        role="organizer",
+        source="cookie",
+        event_ids=[],
+    )
+    app.dependency_overrides[get_db] = lambda: mock_db
+
+    response = client.post(
+        "/talks/1/review",
+        json={"decision": "approve"},
+    )
+    assert response.status_code == 403
+    assert response.json()["detail"] == "User is not authorized to access this event"
+
+
+def test_review_human_organizer_owned_event_success(
+    mock_db, preview_talk, fake_storage
+):
+    """POST /talks/{id}/review succeeds for organizer who owns the event."""
+    owned_event = models.Event(id=1, name="Owned Event", created_by_user_id=10)
+
+    def mock_query(model):
+        m = MagicMock()
+        if model == models.Event:
+            m.filter.return_value.first.return_value = owned_event
+        else:
+            m.filter.return_value.first.return_value = preview_talk
+            m.filter.return_value.with_for_update.return_value = m.filter.return_value
+        return m
+
+    mock_db.query.side_effect = mock_query
+
+    app.dependency_overrides[get_current_user] = lambda: CurrentUser(
+        user_id=10,
+        email="org@example.com",
+        role="organizer",
+        source="cookie",
+        event_ids=[],
+    )
+    app.dependency_overrides[get_db] = lambda: mock_db
+    app.dependency_overrides[get_storage_backend] = lambda: fake_storage
+
+    response = client.post(
+        "/talks/1/review",
+        json={"decision": "approve"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["talk"]["status"] == "pending_intro_outro"
+    assert data["review"]["user_id"] == 10
+
+
+def test_review_human_admin_success(mock_db, preview_talk, fake_storage):
+    """POST /talks/{id}/review succeeds for admin even if event created by someone else."""
+    event = models.Event(id=1, name="Event", created_by_user_id=999)
+
+    def mock_query(model):
+        m = MagicMock()
+        if model == models.Event:
+            m.filter.return_value.first.return_value = event
+        else:
+            m.filter.return_value.first.return_value = preview_talk
+            m.filter.return_value.with_for_update.return_value = m.filter.return_value
+        return m
+
+    mock_db.query.side_effect = mock_query
+
+    app.dependency_overrides[get_current_user] = lambda: CurrentUser(
+        user_id=1,
+        email="admin@example.com",
+        role="admin",
+        source="cookie",
+        event_ids=[],
+    )
+    app.dependency_overrides[get_db] = lambda: mock_db
+    app.dependency_overrides[get_storage_backend] = lambda: fake_storage
+
+    response = client.post(
+        "/talks/1/review",
+        json={"decision": "approve"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["talk"]["status"] == "pending_intro_outro"
+    assert data["review"]["user_id"] == 1

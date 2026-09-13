@@ -1,0 +1,357 @@
+{% extends "base.html.jinja" %}
+{% block title %}Dashboard{% endblock %}
+
+{% block extra_head %}
+<link rel="stylesheet" href="/static/css/dashboard.css">
+{% endblock %}
+
+{% macro status_badge(status) %}
+  {% if status == 'waiting_for_files' %}
+    <span class="badge badge-waiting"><span class="badge-dot"></span>Waiting for files</span>
+  {% elif status == 'detecting' %}
+    <span class="badge badge-processing"><span class="spinner spinner-sm"></span>Detecting</span>
+  {% elif status in ['pending_approval', 'pending_bounds'] %}
+    <span class="badge badge-pending"><span class="badge-dot"></span>Pending Review (Gate 1)</span>
+  {% elif status in ['cutting', 'generating_previews', 'transcoding', 'uploading'] %}
+    <span class="badge badge-processing"><span class="spinner spinner-sm"></span>{{ status | replace('_', ' ') | title }}</span>
+  {% elif status == 'preview' %}
+    <span class="badge badge-preview"><span class="badge-dot"></span>Preview Ready (Gate 2)</span>
+  {% elif status == 'needs_work' %}
+    <span class="badge badge-pending"><span class="badge-dot"></span>Needs Work</span>
+  {% elif status == 'done' %}
+    <span class="badge badge-done"><span class="badge-dot"></span>Published</span>
+  {% elif status in ['rejected', 'broken'] %}
+    <span class="badge badge-danger"><span class="badge-dot"></span>{{ status | title }}</span>
+  {% else %}
+    <span class="badge badge-waiting"><span class="badge-dot"></span>{{ status }}</span>
+  {% endif %}
+{% endmacro %}
+
+{% block content %}
+<div class="page-body">
+
+  <!-- Stats Summary Row -->
+  <div class="stats-grid">
+    <div class="stat-card">
+      <span class="stat-label">Total Talks</span>
+      <span class="stat-value">{{ stats.total }}</span>
+    </div>
+    <div class="stat-card">
+      <span class="stat-label">Pending Review</span>
+      <span class="stat-value amber">{{ stats.pending }}</span>
+    </div>
+    <div class="stat-card">
+      <span class="stat-label">Processing</span>
+      <span class="stat-value blue">{{ stats.processing }}</span>
+    </div>
+    <div class="stat-card">
+      <span class="stat-label">Preview Ready</span>
+      <span class="stat-value blue">{{ stats.preview }}</span>
+    </div>
+    <div class="stat-card">
+      <span class="stat-label">Published</span>
+      <span class="stat-value green">{{ stats.done }}</span>
+    </div>
+  </div>
+
+  <!-- Filter Bar -->
+  <div class="filter-bar">
+    <form method="get" action="/studio" class="filter-form">
+      <div class="search-wrap">
+        <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+          <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+        </svg>
+        <input
+          id="search-input"
+          class="input-field"
+          type="text"
+          name="q"
+          placeholder="Filter by talk title..."
+          value="{{ q }}"
+          autocomplete="off"
+        >
+      </div>
+
+      <select id="status-select" class="select-field" name="status_filter">
+        <option value="">All Statuses</option>
+        {% for s in all_statuses %}
+          <option value="{{ s }}" {% if s == status_filter %}selected{% endif %}>
+            {{ s | replace('_', ' ') | title }}
+          </option>
+        {% endfor %}
+      </select>
+
+      {% if event_id %}
+        <input type="hidden" name="event_id" value="{{ event_id }}">
+      {% endif %}
+
+      <button class="btn btn-primary" type="submit" id="filter-btn">
+        <svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+          <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46"/>
+        </svg>
+        Filter
+      </button>
+
+      {% if q or status_filter %}
+        <a href="/studio" class="btn btn-ghost" id="clear-btn">Clear</a>
+      {% endif %}
+    </form>
+  </div>
+
+  <!-- Bulk Actions Bar -->
+  <div id="bulk-actions-bar">
+    <div class="bulk-actions-info">
+      <span id="selected-count-text">0 talks selected</span>
+    </div>
+    <div class="bulk-actions-btns">
+      <button class="btn btn-ghost btn-sm" id="btn-clear-selection">Deselect All</button>
+      <button class="btn btn-ghost btn-sm" id="btn-bulk-delete">
+        <svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+        Delete Selected (<span id="bulk-delete-count">0</span>)
+      </button>
+    </div>
+  </div>
+
+  <!-- Talks Table -->
+  <div class="table-wrap">
+    <div class="table-header">
+      <div>
+        <span class="table-title">Conference Talks</span>
+        <span class="table-count table-count-spaced">{{ talks | length }} result{% if talks | length != 1 %}s{% endif %}</span>
+      </div>
+      <div class="table-header-actions">
+        {% if user and user.role in ['organizer', 'admin'] %}
+        <a href="/studio/events" class="btn btn-ghost btn-sm" id="btn-events-link">
+          <svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+          Events
+        </a>
+        {% endif %}
+        <button class="btn btn-ghost btn-sm" id="btn-open-import">
+          <svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          Import Schedule
+        </button>
+        <button class="btn btn-ghost btn-sm" id="btn-open-room-attach">
+          <svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><rect x="2" y="2" width="20" height="20" rx="2.18" ry="2.18"/><line x1="7" y1="2" x2="7" y2="22"/><line x1="17" y1="2" x2="17" y2="22"/><line x1="2" y1="12" x2="22" y2="12"/></svg>
+          Attach Room Video
+        </button>
+        <button class="btn btn-primary btn-sm" id="btn-open-quick-talk">
+          <svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+          + New Talk
+        </button>
+      </div>
+    </div>
+
+    {% if talks %}
+    <table>
+      <thead>
+        <tr>
+          <th class="col-checkbox">
+            <input type="checkbox" id="select-all-talks" title="Select all talks">
+          </th>
+          <th>Talk Title</th>
+          <th>Room</th>
+          <th>Start Time</th>
+          <th>Duration</th>
+          <th>Status</th>
+          <th class="col-actions">Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for talk in talks %}
+        <tr data-talk-id="{{ talk.id }}" data-status="{{ talk.status }}">
+          <td class="col-checkbox">
+            <input type="checkbox" class="talk-checkbox" value="{{ talk.id }}">
+          </td>
+          <td class="td-title">
+            <strong>{{ talk.title }}</strong>
+            <small>ID #{{ talk.id }} &bull; Event #{{ talk.event_id }}</small>
+          </td>
+          <td>{{ talk.room or '—' }}</td>
+          <td class="td-mono">{{ talk.start.strftime('%b %d, %H:%M') if talk.start else '—' }}</td>
+          <td class="td-mono">
+            {% if talk.start and talk.end %}
+              {% set dur = (talk.end - talk.start).total_seconds() | int %}
+              {% set m = dur // 60 %}
+              {% set s = dur % 60 %}
+              {{ '%d:%02d' | format(m, s) }}
+            {% else %}—{% endif %}
+          </td>
+          <td class="status-cell" data-talk-id="{{ talk.id }}">
+            {% set active_job = (talk.jobs | selectattr('status', 'equalto', 'running') | list | first) if talk.jobs else none %}
+            {% if active_job and active_job.progress_pct is not none %}
+              <div class="job-progress-col">
+                <div class="job-progress-info">
+                  <span class="badge badge-blue badge-pulse"><span class="badge-dot"></span>{{ talk.status | replace('_', ' ') | title }}</span>
+                  <span class="badge badge-info job-progress-pct">{{ "%.0f"|format(active_job.progress_pct) }}%</span>
+                </div>
+                <div class="job-progress-track job-progress-track-sm">
+                  <div class="job-progress-fill animated" data-progress="{{ active_job.progress_pct }}"></div>
+                </div>
+                {% if active_job.estimated_remaining is not none %}
+                  <span class="job-progress-time">~{{ "%.0f"|format(active_job.estimated_remaining) }}s left</span>
+                {% elif active_job.elapsed_time is not none %}
+                  <span class="job-progress-time">{{ "%.0f"|format(active_job.elapsed_time) }}s elapsed</span>
+                {% endif %}
+              </div>
+            {% else %}
+              {{ status_badge(talk.status) }}
+            {% endif %}
+          </td>
+          <td class="col-actions">
+            <div class="row-actions-group">
+              <a href="/studio/talks/{{ talk.id }}" class="btn btn-ghost btn-sm">
+                Open Studio
+              </a>
+              <button class="btn btn-ghost btn-sm btn-delete-talk" data-talk-id="{{ talk.id }}" data-talk-title="{{ talk.title }}" title="Delete Talk">
+                <svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+              </button>
+            </div>
+          </td>
+        </tr>
+        {% endfor %}
+        <tr id="no-client-matches-row">
+          <td colspan="7" class="no-matches-cell">
+            <div class="no-matches-title">No matching talks</div>
+            <div class="no-matches-desc">No talks match the active search or filter.</div>
+          </td>
+        </tr>
+      </tbody>
+    </table>
+    {% else %}
+    <div class="empty-state-wrap">
+      {% if q or status_filter %}
+        <p class="empty-state-title">No matching talks</p>
+        <p class="empty-state-desc">No talks match your current filter or search criteria.</p>
+        <a href="/studio" class="btn btn-ghost btn-sm empty-state-btn">Clear Filters</a>
+      {% else %}
+        <p class="empty-state-title">No talks in workspace</p>
+        <p class="empty-state-hint">Use the buttons above to import a conference schedule or add a talk.</p>
+      {% endif %}
+    </div>
+    {% endif %}
+  </div>
+
+</div>
+
+<!-- ── MODAL: Import Schedule ────────────────────────────────────── -->
+<div id="modal-import" class="dashboard-modal-backdrop">
+  <div class="dashboard-modal-card modal-import-card">
+    <div class="dashboard-modal-header">
+      <h3 class="dashboard-modal-title">Import Schedule (JSON)</h3>
+      <button class="btn btn-ghost btn-sm btn-close-import dashboard-modal-close">✕</button>
+    </div>
+
+    <p class="dashboard-modal-desc">
+      Upload a standard Pretalx/Frab schedule file, or paste a JSON array of sessions.
+    </p>
+
+    <div class="dashboard-modal-field">
+      <label class="dashboard-modal-label">Schedule JSON File</label>
+      <input type="file" id="import-file-input" accept=".json,application/json" class="input-field dashboard-modal-file-input">
+    </div>
+
+    <div class="dashboard-modal-field-lg">
+      <label class="dashboard-modal-label">Or Paste JSON</label>
+      <textarea id="import-json-textarea" class="input-field dashboard-modal-textarea" rows="4" placeholder='[{"title": "Keynote Speech", "room": "Main Stage"}]'></textarea>
+    </div>
+
+    <div class="dashboard-modal-footer">
+      <button class="btn btn-ghost btn-sm btn-close-import">Cancel</button>
+      <button class="btn btn-primary btn-sm" id="btn-submit-import">
+        Import Schedule
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- ── MODAL: Attach Room Video ─────────────────────────────────── -->
+<div id="modal-attach-room" class="dashboard-modal-backdrop">
+  <div class="dashboard-modal-card modal-attach-card">
+    <div class="dashboard-modal-header">
+      <h3 class="dashboard-modal-title">Attach Room Recording</h3>
+      <button class="btn btn-ghost btn-sm btn-close-attach-room dashboard-modal-close">✕</button>
+    </div>
+
+    <p class="dashboard-modal-desc">
+      Upload a single multi-hour room recording to attach it to all scheduled sessions in that room.
+    </p>
+
+    <div class="dashboard-modal-field">
+      <label class="dashboard-modal-label dashboard-modal-label-tight">Select Room</label>
+      <input type="text" id="attach-room-input" list="room-options" class="input-field" placeholder="e.g. Auditorium A" value="{% if all_rooms %}{{ all_rooms[0] }}{% endif %}">
+      <datalist id="room-options">
+        {% for r in all_rooms %}
+          <option value="{{ r }}">
+        {% endfor %}
+      </datalist>
+    </div>
+
+    <div class="dashboard-modal-field-lg">
+      <label class="dashboard-modal-label dashboard-modal-label-tight">Room Recording Video File</label>
+      <input type="file" id="attach-room-file" accept="video/*" class="input-field dashboard-modal-file-input">
+    </div>
+
+    <div class="dashboard-modal-footer">
+      <button class="btn btn-ghost btn-sm btn-close-attach-room">Cancel</button>
+      <button class="btn btn-primary btn-sm" id="btn-submit-attach-room">
+        Attach to All Sessions in Room
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- ── MODAL: Quick Add Talk ────────────────────────────────────── -->
+<div id="modal-quick-talk" class="dashboard-modal-backdrop">
+  <div class="dashboard-modal-card modal-quick-card">
+    <div class="dashboard-modal-header">
+      <h3 class="dashboard-modal-title">Register New Talk</h3>
+      <button class="btn btn-ghost btn-sm btn-close-quick-talk dashboard-modal-close">✕</button>
+    </div>
+
+    <div class="dashboard-modal-field-sm">
+      <label class="dashboard-modal-label dashboard-modal-label-tight">Event Name</label>
+      {% if user_events %}
+      <select id="quick-event-name" class="input-field">
+        {% for ev in user_events %}
+          <option value="{{ ev.name }}" data-event-id="{{ ev.id }}" {% if event_id == ev.id %}selected{% endif %}>{{ ev.name }}</option>
+        {% endfor %}
+      </select>
+      {% else %}
+      <input type="text" id="quick-event-name" class="input-field" value="FOSSASIA Summit 2026">
+      {% endif %}
+    </div>
+
+    <div class="dashboard-modal-field-sm">
+      <label class="dashboard-modal-label dashboard-modal-label-tight">Talk Title</label>
+      <input type="text" id="quick-talk-title" class="input-field" placeholder="e.g. Building Open Video Systems" required>
+    </div>
+
+    <div class="dashboard-modal-field-sm">
+      <label class="dashboard-modal-label dashboard-modal-label-tight">Room</label>
+      <input type="text" id="quick-talk-room" class="input-field" value="Auditorium A">
+    </div>
+
+    <div class="dashboard-modal-grid-2">
+      <div>
+        <label class="dashboard-modal-label dashboard-modal-label-tight">Start Time (Optional)</label>
+        <input type="datetime-local" id="quick-talk-start" class="input-field">
+      </div>
+      <div>
+        <label class="dashboard-modal-label dashboard-modal-label-tight">End Time (Optional)</label>
+        <input type="datetime-local" id="quick-talk-end" class="input-field">
+      </div>
+    </div>
+
+    <div class="dashboard-modal-footer">
+      <button class="btn btn-ghost btn-sm btn-close-quick-talk">Cancel</button>
+      <button class="btn btn-primary btn-sm" id="btn-submit-quick-talk">
+        Create Talk
+      </button>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script src="/static/js/dashboard.js"></script>
+{% endblock %}

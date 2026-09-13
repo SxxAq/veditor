@@ -1,7 +1,7 @@
 import re
 from datetime import UTC, datetime, time
 from enum import Enum
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import (
     BaseModel,
@@ -12,17 +12,40 @@ from pydantic import (
     model_validator,
 )
 
+from app.retention import validate_retention_overrides
+
 
 class EventBase(BaseModel):
     name: str
+    retention_overrides: dict[str, Any] | None = None
+
+    @field_validator("retention_overrides")
+    @classmethod
+    def _validate_retention_overrides(
+        cls, v: dict[str, Any] | None
+    ) -> dict[str, Any] | None:
+        return validate_retention_overrides(v)
 
 
 class EventCreate(EventBase):
     pass
 
 
+class EventUpdate(BaseModel):
+    name: str | None = None
+    retention_overrides: dict[str, Any] | None = None
+
+    @field_validator("retention_overrides")
+    @classmethod
+    def _validate_retention_overrides(
+        cls, v: dict[str, Any] | None
+    ) -> dict[str, Any] | None:
+        return validate_retention_overrides(v)
+
+
 class EventRead(EventBase):
     id: int
+    created_by_user_id: int | None = None
     model_config = ConfigDict(from_attributes=True)
 
 
@@ -161,6 +184,7 @@ class ReviewRead(ReviewBase):
     id: int
     talk_id: int
     created_at: datetime
+    user_id: int | None = None
     model_config = ConfigDict(from_attributes=True)
 
 
@@ -263,3 +287,45 @@ class IntroOutroRequest(BaseModel):
                 "custom_outro_path is required when outro_source is 'custom'"
             )
         return self
+
+
+class TokenResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    expires_in: int
+
+
+class UserRead(BaseModel):
+    id: int
+    email: str
+    role: str
+    is_active: bool
+    created_at: datetime
+    model_config = ConfigDict(from_attributes=True)
+
+
+class UserPromoteRequest(BaseModel):
+    role: Literal["user", "organizer", "admin"]
+
+
+class TalkUpdate(BaseModel):
+    title: str | None = None
+    room: str | None = None
+    start: datetime | None = None
+    end: datetime | None = None
+
+
+class BulkDeleteRequest(BaseModel):
+    talk_ids: list[int]
+
+
+class BulkDeleteResponse(BaseModel):
+    status: str = "ok"
+    deleted_count: int
+
+
+class ScheduleImportResponse(BaseModel):
+    status: str = "ok"
+    event_id: int
+    event_name: str
+    imported_count: int
