@@ -956,13 +956,44 @@ def test_e2e_cross_tenant_event_scoping_isolation():
         _clear_deps()
 
 
+# ---------------------------------------------------------------------------
+# Module-level RQ dummy tasks for integration tests
+# ---------------------------------------------------------------------------
+
+
+def _e2e_dummy_light_task(val: int = 1) -> int:
+    return val + 1
+
+
+def _e2e_dummy_heavy_task(duration: float = 0.5) -> str:
+    import time
+
+    time.sleep(duration)
+    return "heavy_complete"
+
+
+def _run_named_simple_worker(redis_url: str, queue_name: str) -> None:
+    import redis
+    from rq import Queue, SimpleWorker
+
+    conn = redis.from_url(redis_url)
+    q = Queue(queue_name, connection=conn)
+    SimpleWorker([q], connection=conn).work(burst=True)
+
+
 def test_e2e_heavy_light_queue_isolation():
     """Verify that heavy queue workloads do not block light queue tasks.
 
     Asserts that STAGE_CONFIG strictly segregates CPU-intensive stages
     (such as transcode) into the heavy queue and interactive stages
-    into the light queue, and verifies independent queue routing.
+    into the light queue, and verifies independent queue execution with SimpleWorker.
     """
+    from uuid import uuid4
+
+    import redis
+    from rq import Queue, SimpleWorker
+
+    from app.config import settings
     from app.queue import heavy_queue, light_queue
     from app.tasks import STAGE_CONFIG
 
@@ -979,30 +1010,261 @@ def test_e2e_heavy_light_queue_isolation():
     assert heavy_queue.name == "heavy"
     assert light_queue.name != heavy_queue.name
 
-    # 3. Simulate queue execution order: light worker processes only light queue
-    processed = []
+    # 3. Real RQ queue isolation: light-only worker drains light queue and leaves heavy work queued
+    conn = redis.from_url(settings.redis_url)
+    iso_heavy_q = Queue(f"test_heavy_{uuid4().hex}", connection=conn)
+    iso_light_q = Queue(f"test_light_{uuid4().hex}", connection=conn)
 
-    def mock_heavy_work():
-        processed.append("heavy_completed")
+    try:
+        heavy_job = iso_heavy_q.enqueue(_e2e_dummy_heavy_task, 0.1)
+        light_job = iso_light_q.enqueue(_e2e_dummy_light_task, 41)
 
-    def mock_light_work():
-        processed.append("light_completed")
+        # Light worker processes only the light queue
+        SimpleWorker([iso_light_q], connection=conn).work(burst=True)
 
-    mock_light_q = MagicMock()
-    mock_heavy_q = MagicMock()
+        light_job.refresh()
+        heavy_job.refresh()
 
-    mock_light_q.name = "light"
-    mock_heavy_q.name = "heavy"
+        assert light_job.get_status() in ("finished", "done")
+        assert light_job.return_value() == 42
+        assert heavy_job.get_status() == "queued"
+        assert iso_heavy_q.count == 1
 
-    # Enqueue heavy task first, then light task
-    mock_heavy_q.enqueue(mock_heavy_work)
-    mock_light_q.enqueue(mock_light_work)
+        # Drain heavy queue
+        SimpleWorker([iso_heavy_q], connection=conn).work(burst=True)
+        heavy_job.refresh()
+        assert heavy_job.get_status() in ("finished", "done")
+        assert heavy_job.return_value() == "heavy_complete"
+        assert iso_heavy_q.count == 0
+    finally:
+        iso_heavy_q.empty()
+        iso_light_q.empty()
 
-    # Light worker processes light task without touching heavy task
-    mock_light_q.enqueue.assert_called_once_with(mock_light_work)
-    mock_heavy_q.enqueue.assert_called_once_with(mock_heavy_work)
 
-    # Execute light work
-    mock_light_work()
-    assert processed == ["light_completed"]
-    assert "heavy_completed" not in processed
+def test_e2e_heavy_job_in_flight_does_not_block_light_job():
+    """Concurrency test proving an active, in-flight heavy job does not block a light job."""
+    import multiprocessing
+    import time
+    from uuid import uuid4
+
+    import redis
+    from rq import Queue, SimpleWorker
+
+    from app.config import settings
+
+    conn = redis.from_url(settings.redis_url)
+    iso_heavy_q = Queue(f"test_heavy_{uuid4().hex}", connection=conn)
+    iso_light_q = Queue(f"test_light_{uuid4().hex}", connection=conn)
+
+    try:
+        heavy_job = iso_heavy_q.enqueue(_e2e_dummy_heavy_task, 1.0)
+        light_job = iso_light_q.enqueue(_e2e_dummy_light_task, 99)
+
+        ctx = multiprocessing.get_context("spawn")
+        heavy_proc = ctx.Process(
+            target=_run_named_simple_worker,
+            args=(settings.redis_url, iso_heavy_q.name),
+        )
+        heavy_proc.start()
+
+        # Wait briefly until the heavy job is picked up or heavy process is running
+        for _ in range(20):
+            time.sleep(0.05)
+            heavy_job.refresh()
+            if heavy_job.get_status() == "started" or heavy_proc.is_alive():
+                break
+
+        # Execute light worker on main process while heavy job is running
+        light_worker = SimpleWorker([iso_light_q], connection=conn)
+        light_worker.work(burst=True)
+
+        light_job.refresh()
+        heavy_job.refresh()
+
+        # Assert light job finished while heavy worker process is still active / job in flight
+        assert light_job.get_status() in ("finished", "done")
+        assert light_job.return_value() == 100
+        assert heavy_proc.is_alive(), (
+            "Light job must complete while heavy job is still in flight"
+        )
+
+        heavy_proc.join(timeout=5.0)
+        heavy_job.refresh()
+        assert not heavy_proc.is_alive()
+        assert heavy_job.get_status() in ("finished", "done")
+        assert heavy_job.return_value() == "heavy_complete"
+    finally:
+        iso_heavy_q.empty()
+        iso_light_q.empty()
+
+
+def test_e2e_rq_driven_lifecycle_ingest_to_preview():
+    """Drive a talk through the RQ-backed processing lifecycle from ingest to preview.
+
+    Validates that real RQ light queue workers process queued jobs synchronously at each step,
+    mutating talk status and persisting job records in the database.
+    """
+    from pathlib import Path
+    from uuid import uuid4
+
+    import redis
+    from rq import Queue, SimpleWorker
+
+    from app.config import settings
+
+    conn = redis.from_url(settings.redis_url)
+    test_light_q = Queue(f"test_light_{uuid4().hex}", connection=conn)
+    test_heavy_q = Queue(f"test_heavy_{uuid4().hex}", connection=conn)
+
+    talk = _mock_talk(talk_id=1, status="waiting_for_files")
+    jobs_dict: dict[int, models.Job] = {}
+    next_job_id = [1]
+
+    mock_db = MagicMock()
+    mock_storage = MagicMock()
+    mock_storage.exists.return_value = True
+    mock_storage.get.return_value = Path("/tmp/mock_raw.mp4")
+    mock_storage.url.return_value = "https://example.com/preview.mp4"
+    mock_storage.list_keys.return_value = ["1/raw/mock_source.mp4"]
+
+    def query_side_effect(model):
+        q = MagicMock()
+        if model == models.Talk:
+            q.filter.return_value.first.return_value = talk
+            q.filter.return_value.with_for_update.return_value.first.return_value = talk
+            q.filter.return_value.all.return_value = [talk]
+        elif model == models.Job:
+
+            def filter_side_effect(*criteria):
+                fq = MagicMock()
+                matching = list(jobs_dict.values())
+                for c in criteria:
+                    if (
+                        hasattr(c, "left")
+                        and hasattr(c.left, "name")
+                        and hasattr(c, "right")
+                        and hasattr(c.right, "value")
+                    ):
+                        field = c.left.name
+                        val = c.right.value
+                        matching = [
+                            j for j in matching if getattr(j, field, None) == val
+                        ]
+                fq.first.side_effect = lambda: matching[0] if matching else None
+                fq.order_by.return_value.all.side_effect = lambda: matching
+                fq.all.side_effect = lambda: matching
+                return fq
+
+            q.filter.side_effect = filter_side_effect
+            q.filter.return_value.first.side_effect = lambda: (
+                list(jobs_dict.values())[-1] if jobs_dict else None
+            )
+            q.filter.return_value.order_by.return_value.all.side_effect = lambda: list(
+                jobs_dict.values()
+            )
+            q.filter.return_value.all.side_effect = lambda: list(jobs_dict.values())
+        return q
+
+    def add_side_effect(obj):
+        if isinstance(obj, models.Job):
+            if obj.id is None:
+                obj.id = next_job_id[0]
+                next_job_id[0] += 1
+            obj.talk = talk
+            jobs_dict[obj.id] = obj
+
+    mock_db.query.side_effect = query_side_effect
+    mock_db.add.side_effect = add_side_effect
+    mock_db.get.side_effect = lambda model, oid: (
+        talk if model == models.Talk and oid == 1 else jobs_dict.get(oid)
+    )
+    mock_db.__enter__.return_value = mock_db
+    mock_db.__exit__.return_value = None
+
+    _setup_deps(mock_db, mock_storage, event_ids=[1])
+
+    with (
+        patch("app.routes.talks.light_queue", test_light_q),
+        patch("app.routes.talks.heavy_queue", test_heavy_q),
+        patch("app.tasks.light_queue", test_light_q),
+        patch("app.tasks.heavy_queue", test_heavy_q),
+        patch(
+            "app.routes.talks.stage_recording",
+            return_value="1/raw/mock_source.mp4",
+        ),
+        patch("app.tasks.SessionLocal", return_value=mock_db),
+        patch("app.tasks.get_storage_backend", return_value=mock_storage),
+        patch("app.tasks.detect") as mock_detect,
+        patch("app.tasks.cut"),
+        patch("app.tasks.generate_preview"),
+    ):
+        mock_detect.return_value = MagicMock(
+            passed=True, actual_duration_seconds=3600.0
+        )
+
+        try:
+            # 1. Ingest recording -> talk transitions to 'detecting', job_detect enqueued to test_light_q
+            resp1 = client.post(
+                "/talks/1/recordings",
+                json={"source_path": "/tmp/mock_source.mp4"},
+                headers={"X-API-Key": "valid"},
+            )
+            assert resp1.status_code == 202
+            assert talk.status == "detecting"
+            assert test_light_q.count == 1
+
+            # 2. Run RQ SimpleWorker to process job_detect -> transitions talk to 'pending_approval'
+            SimpleWorker([test_light_q], connection=conn).work(burst=True)
+            assert test_light_q.count == 0
+            assert talk.status == "pending_approval"
+            assert talk.raw_duration_seconds == 3600.0
+            assert any(
+                j.kind == "detect" and j.status == "done" for j in jobs_dict.values()
+            )
+
+            # 3. Approve talk -> transitions to 'pending_bounds'
+            resp2 = client.post(
+                "/talks/1/approve",
+                json={"decision": "approve"},
+                headers={"X-API-Key": "valid"},
+            )
+            assert resp2.status_code == 200
+            assert talk.status == "pending_bounds"
+
+            # 4. Submit cut bounds -> transitions to 'cutting', job_cut enqueued to test_light_q
+            resp3 = client.post(
+                "/talks/1/cut",
+                json={"cut_start": "00:00:10", "cut_end": "00:50:00"},
+                headers={"X-API-Key": "valid"},
+            )
+            assert resp3.status_code == 202
+            assert talk.status == "cutting"
+            assert talk.cut_start == 10.0
+            assert talk.cut_end == 3000.0
+            assert test_light_q.count == 1
+
+            # 5. Run RQ SimpleWorker to execute job_cut and cascading job_preview -> transitions talk to 'preview'
+            SimpleWorker([test_light_q], connection=conn).work(burst=True)
+            assert test_light_q.count == 0
+            assert talk.status == "preview"
+            assert any(
+                j.kind == "cut" and j.status == "done" for j in jobs_dict.values()
+            )
+            assert any(
+                j.kind == "preview" and j.status == "done" for j in jobs_dict.values()
+            )
+
+            # 6. Final GET /talks/1 assertion
+            get_resp = client.get("/talks/1", headers={"X-API-Key": "valid"})
+            assert get_resp.status_code == 200
+            payload = get_resp.json()
+            assert payload["status"] == "preview"
+            assert payload["cut_start"] == 10.0
+            assert payload["cut_end"] == 3000.0
+            assert payload["raw_duration_seconds"] == 3600.0
+            assert len(jobs_dict) == 3
+            assert {j.kind for j in jobs_dict.values()} == {"detect", "cut", "preview"}
+        finally:
+            _clear_deps()
+            test_light_q.empty()
+            test_heavy_q.empty()
