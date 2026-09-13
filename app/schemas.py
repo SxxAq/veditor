@@ -295,6 +295,19 @@ class TokenResponse(BaseModel):
     expires_in: int
 
 
+class UserRead(BaseModel):
+    id: int
+    email: str
+    role: str
+    is_active: bool
+    created_at: datetime
+    model_config = ConfigDict(from_attributes=True)
+
+
+class UserPromoteRequest(BaseModel):
+    role: Literal["user", "organizer", "admin"]
+
+
 class SSOTokenResponse(BaseModel):
     token: str
     token_type: str = "bearer"

@@ -14,6 +14,7 @@ from app.security import (
     decode_sso_token,
     get_session_secret,
     hash_password,
+    is_valid_email,
     verify_password,
 )
 
@@ -488,3 +489,27 @@ def test_settings_sso_token_expire_seconds_validation():
 
     s = Settings(sso_token_expire_seconds=600)
     assert s.sso_token_expire_seconds == 600
+
+
+def test_is_valid_email():
+    # Valid RFC 5322 emails
+    assert is_valid_email("user@example.com") is True
+    assert is_valid_email("user.name+tag@sub.domain.co") is True
+    assert is_valid_email("admin@test.org") is True
+    assert is_valid_email('  "quoted name"@domain.com  ') is True
+    assert is_valid_email("user@localhost") is True
+    assert is_valid_email("user@[IPv6:2001:db8::1]") is True
+
+    # Invalid emails
+    assert is_valid_email("") is False
+    assert is_valid_email(None) is False
+    assert is_valid_email(12345) is False
+    assert is_valid_email("invalid-email") is False
+    assert is_valid_email("@missinguser.com") is False
+    assert is_valid_email("missingdomain@") is False
+    assert is_valid_email("spaces in@domain.com") is False
+    assert is_valid_email("user@.com") is False
+    assert is_valid_email("user@domain.") is False
+    assert is_valid_email("user@example..com") is False
+    assert is_valid_email("a@b@c.com") is False
+    assert is_valid_email("<script>@domain.com") is False

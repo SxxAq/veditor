@@ -46,7 +46,7 @@ def get_ui_client(
     if not client:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid API Key",
+            detail="Invalid API Key. Please verify your credentials.",
         )
     return client
 
@@ -55,7 +55,7 @@ def get_optional_ui_client(
     request: Request,
     db: Annotated[Session, Depends(get_db)],
 ) -> models.Client | None:
-    """Optional client dependency for public read pages."""
+    """Optional dependency that extracts API Key if present."""
     api_key = request.headers.get("X-API-Key") or request.cookies.get("veditor_api_key")
     if not api_key:
         return None
@@ -69,6 +69,7 @@ def _authorize_studio_talk(
     talk_id: int,
     request: Request,
     db: Session,
+    client: models.Client | None = None,
     not_found_detail: str = "Talk not found",
 ) -> models.Talk:
     """
