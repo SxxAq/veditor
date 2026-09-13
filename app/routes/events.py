@@ -87,6 +87,11 @@ def update_event(
     user: Annotated[CurrentUser, Depends(require_role("organizer"))],
     db: Annotated[Session, Depends(get_db)],
 ):
+    if user.is_sso:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="SSO sessions are not permitted to modify events",
+        )
     event = check_event_access(event_id, user, db)
 
     if payload.name is not None:
@@ -113,6 +118,11 @@ def delete_event(
     db: Annotated[Session, Depends(get_db)],
     storage: Annotated[StorageBackend, Depends(get_storage_backend)],
 ):
+    if user.is_sso:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="SSO sessions are not permitted to delete events",
+        )
     check_event_access(event_id, user, db)
     event = (
         db.query(models.Event)

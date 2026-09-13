@@ -71,6 +71,11 @@ def create_or_update_talk(
     Idempotent on the natural key (event_id, title, start).
     Returns 201 Created on insert, 200 OK on update (preserving existing talk status).
     """
+    if user.is_sso:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="SSO sessions are not permitted to create talks",
+        )
     check_event_access(payload.event_id, user, db)
 
     talk = (
@@ -680,6 +685,11 @@ def update_talk(
     Updates editable talk metadata (title, room).
     Returns 404 if talk is not found or not in caller's event_ids.
     """
+    if user.is_sso:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="SSO sessions are not permitted to modify talk metadata",
+        )
     talk = db.query(models.Talk).filter(models.Talk.id == talk_id).first()
     if not talk or (user.is_machine and talk.event_id not in user.event_ids):
         raise HTTPException(
@@ -734,6 +744,11 @@ def delete_talk(
     Deletes a talk and all associated storage artifacts, jobs, and reviews.
     Returns 404 if talk is not found or not in caller's event_ids.
     """
+    if user.is_sso:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="SSO sessions are not permitted to delete talks",
+        )
     talk = db.query(models.Talk).filter(models.Talk.id == talk_id).first()
     if not talk or (user.is_machine and talk.event_id not in user.event_ids):
         raise HTTPException(
@@ -764,26 +779,18 @@ def bulk_delete_talks(
     if not payload.talk_ids:
         return {"status": "ok", "deleted_count": 0}
 
+    if user.is_sso:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="SSO sessions are not permitted to bulk delete talks",
+        )
+
     if user.is_machine:
         valid_talks = (
             db.query(models.Talk)
             .filter(
                 models.Talk.id.in_(payload.talk_ids),
                 models.Talk.event_id.in_(user.event_ids),
-            )
-            .all()
-        )
-    elif user.is_sso:
-        if user.scope_type != "event" or not user.scope_id:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="SSO session is not authorized for bulk talk deletion",
-            )
-        valid_talks = (
-            db.query(models.Talk)
-            .filter(
-                models.Talk.id.in_(payload.talk_ids),
-                models.Talk.event_id == user.scope_id,
             )
             .all()
         )
@@ -955,6 +962,11 @@ async def import_schedule(
     """
     Imports talks in bulk from Frab/Pretalx JSON or simple JSON lists.
     """
+    if user.is_sso:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="SSO sessions are not permitted to import schedules",
+        )
     data = None
     if file and file.filename:
         content_len = request.headers.get("content-length")
@@ -1161,18 +1173,6 @@ async def import_schedule(
         except ValueError, TypeError:
             pass
 
-    if user.is_sso:
-        if user.scope_type != "event" or not user.scope_id:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="SSO session is not authorized to import schedules",
-            )
-        if target_event_id is None or target_event_id != user.scope_id:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"SSO schedule import requires target_event_id matching SSO event scope ({user.scope_id})",
-            )
-
     event = None
     is_new_event = False
     if target_event_id:
@@ -1183,11 +1183,6 @@ async def import_schedule(
             check_event_access(target_event_id, user, db)
             event = existing_event
         else:
-            if user.is_sso:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail="Target event not found",
-                )
             created_by = user.user_id if not user.is_machine else None
             event = models.Event(name=event_name, created_by_user_id=created_by)
             db.add(event)

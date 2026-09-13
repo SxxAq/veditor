@@ -99,6 +99,7 @@
   </div>
 
   <!-- Bulk Actions Bar -->
+  {% if not (user and user.is_sso) %}
   <div id="bulk-actions-bar">
     <div class="bulk-actions-info">
       <span id="selected-count-text">0 talks selected</span>
@@ -111,6 +112,7 @@
       </button>
     </div>
   </div>
+  {% endif %}
 
   <!-- Talks Table -->
   <div class="table-wrap">
@@ -147,9 +149,11 @@
     <table>
       <thead>
         <tr>
+          {% if not (user and user.is_sso) %}
           <th class="col-checkbox">
             <input type="checkbox" id="select-all-talks" title="Select all talks">
           </th>
+          {% endif %}
           <th>Talk Title</th>
           <th>Room</th>
           <th>Start Time</th>
@@ -161,9 +165,11 @@
       <tbody>
         {% for talk in talks %}
         <tr data-talk-id="{{ talk.id }}" data-status="{{ talk.status }}">
+          {% if not (user and user.is_sso) %}
           <td class="col-checkbox">
             <input type="checkbox" class="talk-checkbox" value="{{ talk.id }}">
           </td>
+          {% endif %}
           <td class="td-title">
             <strong>{{ talk.title }}</strong>
             <small>ID #{{ talk.id }} &bull; Event #{{ talk.event_id }}</small>
@@ -204,15 +210,17 @@
               <a href="/studio/talks/{{ talk.id }}" class="btn btn-ghost btn-sm">
                 Open Studio
               </a>
+              {% if not (user and user.is_sso) %}
               <button class="btn btn-ghost btn-sm btn-delete-talk" data-talk-id="{{ talk.id }}" data-talk-title="{{ talk.title }}" title="Delete Talk">
                 <svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
               </button>
+              {% endif %}
             </div>
           </td>
         </tr>
         {% endfor %}
         <tr id="no-client-matches-row">
-          <td colspan="7" class="no-matches-cell">
+          <td colspan="{% if user and user.is_sso %}6{% else %}7{% endif %}" class="no-matches-cell">
             <div class="no-matches-title">No matching talks</div>
             <div class="no-matches-desc">No talks match the active search or filter.</div>
           </td>
