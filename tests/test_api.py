@@ -1268,3 +1268,499 @@ def test_e2e_rq_driven_lifecycle_ingest_to_preview():
             _clear_deps()
             test_light_q.empty()
             test_heavy_q.empty()
+
+
+# ---------------------------------------------------------------------------
+# Phase 5 Integration Tests (Review Flow, Disk Guard & Progress Tracking)
+# ---------------------------------------------------------------------------
+
+
+def test_e2e_disk_guard_insufficient_storage():
+    """Verify that insufficient disk storage guards against recording ingestion.
+
+    Asserts that when free_bytes() is below required space, POST /talks/{id}/recordings
+    returns 507 Insufficient Storage and no state change or job creation occurs.
+    """
+    from app.ingest import InsufficientStorageError
+
+    talk = _mock_talk(talk_id=1, status="waiting_for_files")
+    mock_db = MagicMock()
+    mock_db.query.return_value.filter.return_value.first.return_value = talk
+    mock_storage = MagicMock()
+    mock_storage.free_bytes.return_value = 100
+
+    _setup_deps(mock_db, mock_storage, event_ids=[1])
+
+    with (
+        patch("app.routes.talks.light_queue") as mock_light_q,
+        patch(
+            "app.routes.talks.stage_recording",
+            side_effect=InsufficientStorageError(
+                required_bytes=1000000, available_bytes=100
+            ),
+        ),
+    ):
+        try:
+            resp = client.post(
+                "/talks/1/recordings",
+                json={"source_path": "/tmp/mock_source.mp4"},
+                headers={"X-API-Key": "valid"},
+            )
+            assert resp.status_code == 507
+            assert "Insufficient storage" in resp.json()["detail"]
+            assert talk.status == "waiting_for_files"
+            mock_light_q.enqueue.assert_not_called()
+        finally:
+            _clear_deps()
+
+
+def test_e2e_full_approve_review_flow_to_done():
+    """Drive a talk from preview through review approve, assembly, and publishing to done.
+
+    Validates review submission, pending_intro_outro transition, assembly orchestration,
+    and confirms the final published artifact is retrievable in storage.
+    """
+    from pathlib import Path
+
+    from app.tasks import (
+        job_concat,
+        job_loudness,
+        job_publish,
+        job_transcode,
+    )
+
+    talk = _mock_talk(
+        talk_id=1,
+        status="preview",
+        cut_start=10.0,
+        cut_end=1800.0,
+        raw_duration_seconds=3600.0,
+    )
+    jobs_dict: dict[int, models.Job] = {}
+    reviews_list: list[models.Review] = []
+    next_job_id = [1]
+    storage_data: dict[str, str] = {
+        "1/raw/mock_source.mp4": "raw_video_bytes",
+        "1/cut/cut.mp4": "cut_video_bytes",
+        "1/preview/preview.mp4": "preview_video_bytes",
+    }
+
+    mock_db = MagicMock()
+    mock_storage = MagicMock()
+    mock_storage.exists.side_effect = lambda k: k in storage_data
+    mock_storage.get.side_effect = lambda k: Path(f"/tmp/{k}")
+    mock_storage.url.side_effect = lambda k: f"https://cdn.example.com/{k}"
+
+    def put_mock(key, source):
+        storage_data[key] = str(source)
+
+    mock_storage.put.side_effect = put_mock
+    mock_storage.list_keys.side_effect = lambda prefix="": [
+        k for k in storage_data if k.startswith(prefix)
+    ]
+
+    def query_mock(model):
+        q = MagicMock()
+        if model == models.Talk:
+            q.filter.return_value.first.return_value = talk
+            q.filter.return_value.with_for_update.return_value.first.return_value = talk
+            q.filter.return_value.all.return_value = [talk]
+        elif model == models.Job:
+            q.filter.return_value.all.side_effect = lambda: list(jobs_dict.values())
+            q.filter.return_value.first.side_effect = lambda: (
+                list(jobs_dict.values())[-1] if jobs_dict else None
+            )
+        elif model == models.Review:
+            q.filter.return_value.all.side_effect = lambda: reviews_list
+        return q
+
+    def add_mock(obj):
+        if isinstance(obj, models.Job):
+            if obj.id is None:
+                obj.id = next_job_id[0]
+                next_job_id[0] += 1
+            obj.talk = talk
+            jobs_dict[obj.id] = obj
+        elif isinstance(obj, models.Review):
+            if obj.id is None:
+                obj.id = len(reviews_list) + 1
+            if obj.created_at is None:
+                obj.created_at = datetime.now(UTC)
+            reviews_list.append(obj)
+
+    mock_db.query.side_effect = query_mock
+    mock_db.get.side_effect = lambda model, oid: (
+        talk
+        if getattr(model, "__name__", "") == "Talk" and oid == talk.id
+        else jobs_dict.get(oid)
+    )
+    mock_db.add.side_effect = add_mock
+    mock_db.__enter__.return_value = mock_db
+    mock_db.__exit__.return_value = None
+
+    _setup_deps(mock_db, mock_storage, event_ids=[1])
+
+    with (
+        patch("app.routes.talks.light_queue") as mock_lq,
+        patch("app.routes.talks.heavy_queue") as mock_hq,
+        patch("app.tasks.light_queue", new_callable=lambda: mock_lq),
+        patch("app.tasks.heavy_queue", new_callable=lambda: mock_hq),
+        patch("app.tasks.SessionLocal", return_value=mock_db),
+        patch("app.tasks.get_storage_backend", return_value=mock_storage),
+        patch("app.tasks.concat"),
+        patch("app.tasks.normalize"),
+        patch("app.tasks.transcode"),
+        patch("app.tasks.publish") as mock_publish_fn,
+    ):
+        mock_publish_fn.side_effect = lambda *args, **kwargs: storage_data.update(
+            {"1/final/final.mp4": "published_video"}
+        )
+
+        try:
+            # 1. Speaker approves preview -> transitions to 'pending_intro_outro'
+            review_resp = client.post(
+                "/talks/1/review",
+                json={"decision": "approve", "note": "Approved by speaker"},
+                headers={"X-API-Key": "valid"},
+            )
+            assert review_resp.status_code == 200
+            assert talk.status == "pending_intro_outro"
+            assert len(reviews_list) == 1
+            assert reviews_list[0].decision == "approve"
+            assert reviews_list[0].note == "Approved by speaker"
+
+            # 2. Configure assembly (no intro/outro) -> transitions to 'assembling', enqueues job_concat
+            assemble_resp = client.post(
+                "/talks/1/assemble",
+                json={"include_intro": False, "include_outro": False},
+                headers={"X-API-Key": "valid"},
+            )
+            assert assemble_resp.status_code == 202
+            assert talk.status == "assembling"
+            mock_lq.enqueue.assert_called_once()
+            queued_concat_task, *_ = mock_lq.enqueue.call_args[0]
+            assert queued_concat_task == job_concat
+
+            # 3. Execute job_concat -> enqueues job_loudness
+            mock_lq.reset_mock()
+            job_concat(
+                1,
+                cut_key="1/cut/cut.mp4",
+                intro_key=None,
+                outro_key=None,
+                concat_key="1/assemble/assemble.mp4",
+            )
+            mock_lq.enqueue.assert_called_once()
+            queued_loudness, *_ = mock_lq.enqueue.call_args[0]
+            assert queued_loudness == job_loudness
+
+            # 4. Execute job_loudness -> transitions to 'transcoding', enqueues job_transcode on heavy_queue
+            mock_lq.reset_mock()
+            mock_hq.reset_mock()
+            job_loudness(1, "1/assemble/assemble.mp4", "1/assemble/assemble_loud.mp4")
+            assert talk.status == "transcoding"
+            mock_hq.enqueue.assert_called_once()
+            queued_transcode, *_ = mock_hq.enqueue.call_args[0]
+            assert queued_transcode == job_transcode
+
+            # 5. Execute job_transcode -> transitions to 'uploading', enqueues job_publish on light_queue
+            mock_lq.reset_mock()
+            mock_hq.reset_mock()
+            job_transcode(1, "1/assemble/assemble_loud.mp4", "1/final/final.mp4")
+            assert talk.status == "uploading"
+            mock_lq.enqueue.assert_called_once()
+            queued_publish, *_ = mock_lq.enqueue.call_args[0]
+            assert queued_publish == job_publish
+
+            # 6. Execute job_publish -> transitions talk to 'done' and verifies final storage artifact
+            job_publish(1, "1/final/final.mp4")
+            assert talk.status == "done"
+            assert mock_storage.exists("1/final/final.mp4")
+
+            # 7. Final GET /talks/1 verification
+            get_resp = client.get("/talks/1", headers={"X-API-Key": "valid"})
+            assert get_resp.status_code == 200
+            data = get_resp.json()
+            assert data["status"] == "done"
+        finally:
+            _clear_deps()
+
+
+def test_e2e_needs_work_review_loop():
+    """Drive consecutive needs_work cycles, verifying return to preview without stale jobs."""
+    from pathlib import Path
+
+    from app.tasks import job_cut, job_preview
+
+    talk = _mock_talk(
+        talk_id=1,
+        status="preview",
+        cut_start=10.0,
+        cut_end=1800.0,
+        raw_duration_seconds=3600.0,
+    )
+    jobs_dict: dict[int, models.Job] = {}
+    reviews_list: list[models.Review] = []
+    next_job_id = [1]
+
+    mock_db = MagicMock()
+    mock_storage = MagicMock()
+    mock_storage.exists.return_value = True
+    mock_storage.get.return_value = Path("/tmp/mock_raw.mp4")
+    mock_storage.list_keys.return_value = ["1/raw/mock_source.mp4"]
+    mock_storage.url.return_value = "https://example.com/preview.mp4"
+
+    def query_mock(model):
+        q = MagicMock()
+        if model == models.Talk:
+            q.filter.return_value.first.return_value = talk
+            q.filter.return_value.with_for_update.return_value.first.return_value = talk
+            q.filter.return_value.all.return_value = [talk]
+        elif model == models.Job:
+            q.filter.return_value.all.side_effect = lambda: list(jobs_dict.values())
+            q.filter.return_value.first.side_effect = lambda: (
+                list(jobs_dict.values())[-1] if jobs_dict else None
+            )
+        elif model == models.Review:
+            q.filter.return_value.all.side_effect = lambda: reviews_list
+        return q
+
+    def add_mock(obj):
+        if isinstance(obj, models.Job):
+            if obj.id is None:
+                obj.id = next_job_id[0]
+                next_job_id[0] += 1
+            obj.talk = talk
+            jobs_dict[obj.id] = obj
+        elif isinstance(obj, models.Review):
+            if obj.id is None:
+                obj.id = len(reviews_list) + 1
+            if obj.created_at is None:
+                obj.created_at = datetime.now(UTC)
+            reviews_list.append(obj)
+
+    mock_db.query.side_effect = query_mock
+    mock_db.get.side_effect = lambda model, oid: (
+        talk
+        if getattr(model, "__name__", "") == "Talk" and oid == talk.id
+        else jobs_dict.get(oid)
+    )
+    mock_db.add.side_effect = add_mock
+    mock_db.__enter__.return_value = mock_db
+    mock_db.__exit__.return_value = None
+
+    _setup_deps(mock_db, mock_storage, event_ids=[1])
+
+    with (
+        patch("app.tasks.SessionLocal", return_value=mock_db),
+        patch("app.tasks.get_storage_backend", return_value=mock_storage),
+        patch("app.tasks.cut"),
+        patch("app.tasks.generate_preview"),
+        patch("app.routes.talks.light_queue") as mock_lq,
+        patch("app.tasks.light_queue", new_callable=lambda: mock_lq),
+    ):
+        try:
+            # === CYCLE 1: needs_work -> pending_bounds -> cutting -> preview ===
+            # Speaker requests rework
+            r1 = client.post(
+                "/talks/1/review",
+                json={"decision": "needs_work", "note": "Cut head too close"},
+                headers={"X-API-Key": "valid"},
+            )
+            assert r1.status_code == 200
+            assert talk.status == "pending_bounds"
+
+            # Operator resubmits cut bounds
+            cut1 = client.post(
+                "/talks/1/cut",
+                json={"cut_start": "00:00:15", "cut_end": "00:45:00"},
+                headers={"X-API-Key": "valid"},
+            )
+            assert cut1.status_code == 202
+            assert talk.status == "cutting"
+            assert talk.cut_start == 15.0
+            assert talk.cut_end == 2700.0
+
+            # Execute cycle 1 pipeline jobs
+            job_cut(1, "1/raw/mock_source.mp4")
+            assert talk.status == "generating_previews"
+            job_preview(1, "1/cut/cut.mp4")
+            assert talk.status == "preview"
+
+            # === CYCLE 2: needs_work -> pending_bounds -> cutting -> preview ===
+            # Speaker requests second rework
+            r2 = client.post(
+                "/talks/1/review",
+                json={"decision": "needs_work", "note": "Need 5s more at the end"},
+                headers={"X-API-Key": "valid"},
+            )
+            assert r2.status_code == 200
+            assert talk.status == "pending_bounds"
+
+            # Operator resubmits revised cut bounds
+            cut2 = client.post(
+                "/talks/1/cut",
+                json={"cut_start": "00:00:15", "cut_end": "00:46:00"},
+                headers={"X-API-Key": "valid"},
+            )
+            assert cut2.status_code == 202
+            assert talk.status == "cutting"
+            assert talk.cut_start == 15.0
+            assert talk.cut_end == 2760.0
+
+            # Execute cycle 2 pipeline jobs
+            job_cut(1, "1/raw/mock_source.mp4")
+            assert talk.status == "generating_previews"
+            job_preview(1, "1/cut/cut.mp4")
+            assert talk.status == "preview"
+
+            # Verify review count and notes
+            assert len(reviews_list) == 2
+            assert [r.decision for r in reviews_list] == ["needs_work", "needs_work"]
+            assert reviews_list[0].note == "Cut head too close"
+            assert reviews_list[1].note == "Need 5s more at the end"
+        finally:
+            _clear_deps()
+
+
+def test_e2e_reject_flow_and_review_persistence():
+    """Verify initial approve reject and speaker review reject paths with persistence."""
+    mock_db = MagicMock()
+    mock_storage = MagicMock()
+    talk1 = _mock_talk(talk_id=1, status="pending_approval")
+    talk2 = _mock_talk(
+        talk_id=2,
+        status="preview",
+        cut_start=10.0,
+        cut_end=1800.0,
+    )
+    reviews: list[models.Review] = []
+
+    def query_mock(model):
+        q = MagicMock()
+        if model == models.Talk:
+
+            def filter_side_effect(*criteria):
+                fq = MagicMock()
+                # Determine which talk is queried by talk_id criteria
+                tid = None
+                for c in criteria:
+                    if hasattr(c, "right") and hasattr(c.right, "value"):
+                        tid = c.right.value
+                        break
+                selected_talk = talk2 if tid == 2 else talk1
+                fq.first.return_value = selected_talk
+                fq.with_for_update.return_value.first.return_value = selected_talk
+                return fq
+
+            q.filter.side_effect = filter_side_effect
+        elif model == models.Review:
+            q.filter.return_value.all.side_effect = lambda: reviews
+        return q
+
+    def add_mock(obj):
+        if isinstance(obj, models.Review):
+            if obj.id is None:
+                obj.id = len(reviews) + 1
+            if obj.created_at is None:
+                obj.created_at = datetime.now(UTC)
+            reviews.append(obj)
+
+    mock_db.query.side_effect = query_mock
+    mock_db.add.side_effect = add_mock
+    mock_db.__enter__.return_value = mock_db
+    mock_db.__exit__.return_value = None
+
+    _setup_deps(mock_db, mock_storage, event_ids=[1])
+
+    try:
+        # 1. Initial review reject from pending_approval -> transitions talk to terminal 'rejected'
+        r1 = client.post(
+            "/talks/1/approve",
+            json={"decision": "reject"},
+            headers={"X-API-Key": "valid"},
+        )
+        assert r1.status_code == 200
+        assert talk1.status == "rejected"
+
+        # 2. Speaker review reject from preview -> clears cut bounds and resets to pending_bounds
+        r2 = client.post(
+            "/talks/2/review",
+            json={"decision": "reject", "note": "Recording unsuitable"},
+            headers={"X-API-Key": "valid"},
+        )
+        assert r2.status_code == 200
+        assert talk2.status == "pending_bounds"
+        assert talk2.cut_start is None
+        assert talk2.cut_end is None
+        assert len(reviews) == 1
+        assert reviews[0].decision == "reject"
+        assert reviews[0].note == "Recording unsuitable"
+        mock_storage.delete.assert_any_call("2/cut")
+        mock_storage.delete.assert_any_call("2/preview")
+    finally:
+        _clear_deps()
+
+
+def test_e2e_job_progress_tracking_transcode_polling():
+    """Verify Job.progress_pct updates across sequential polls with timing metadata."""
+    from datetime import timedelta
+
+    now = datetime.now(UTC)
+    talk = _mock_talk(talk_id=1, status="transcoding")
+    job = models.Job(
+        id=42,
+        talk_id=1,
+        kind="transcode",
+        status="running",
+        progress_pct=25.0,
+        started_at=now - timedelta(seconds=10),
+        updated_at=now,
+    )
+    job.talk = talk
+
+    mock_db = MagicMock()
+
+    def query_mock(model):
+        q = MagicMock()
+        if model == models.Job:
+            q.filter.return_value.first.return_value = job
+            q.filter.return_value.order_by.return_value.all.return_value = [job]
+            q.filter.return_value.all.return_value = [job]
+        elif model == models.Talk:
+            q.filter.return_value.first.return_value = talk
+        return q
+
+    mock_db.query.side_effect = query_mock
+    _setup_deps(mock_db, event_ids=[1])
+
+    try:
+        # Poll 1: initial progress at 25%
+        p1 = client.get("/jobs/42", headers={"X-API-Key": "valid"})
+        assert p1.status_code == 200
+        data1 = p1.json()
+        assert data1["progress_pct"] == 25.0
+        assert data1["status"] == "running"
+
+        # Advance job progress to 75%
+        job.progress_pct = 75.0
+        job.updated_at = datetime.now(UTC)
+
+        # Poll 2: updated progress at 75%
+        p2 = client.get("/jobs/42", headers={"X-API-Key": "valid"})
+        assert p2.status_code == 200
+        data2 = p2.json()
+        assert data2["progress_pct"] == 75.0
+        assert data2["progress_pct"] > data1["progress_pct"]
+
+        # Finalize job to done at 100%
+        job.progress_pct = 100.0
+        job.status = "done"
+
+        p3 = client.get("/jobs/42", headers={"X-API-Key": "valid"})
+        assert p3.status_code == 200
+        data3 = p3.json()
+        assert data3["progress_pct"] == 100.0
+        assert data3["status"] == "done"
+    finally:
+        _clear_deps()
