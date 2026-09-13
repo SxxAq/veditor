@@ -17,6 +17,8 @@ from app.retention import validate_retention_overrides
 
 class EventBase(BaseModel):
     name: str
+    source: str | None = None
+    external_id: str | None = None
     retention_overrides: dict[str, Any] | None = None
 
     @field_validator("retention_overrides")
@@ -33,6 +35,8 @@ class EventCreate(EventBase):
 
 class EventUpdate(BaseModel):
     name: str | None = None
+    source: str | None = None
+    external_id: str | None = None
     retention_overrides: dict[str, Any] | None = None
 
     @field_validator("retention_overrides")
@@ -50,6 +54,8 @@ class EventRead(EventBase):
 
 
 class ClientBase(BaseModel):
+    name: str | None = None
+    is_platform: bool = False
     event_ids: list[int] = []
 
 
@@ -69,6 +75,7 @@ class TalkBase(BaseModel):
     start: datetime
     end: datetime
     status: str = "waiting_for_files"
+    external_id: str | None = None
 
 
 class TalkCreate(TalkBase):
@@ -339,3 +346,5 @@ class ScheduleImportResponse(BaseModel):
     event_id: int
     event_name: str
     imported_count: int
+    source: str | None = None
+    external_id: str | None = None

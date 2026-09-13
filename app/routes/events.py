@@ -34,6 +34,8 @@ def create_event(
     created_by = user.user_id if not user.is_machine else None
     event = models.Event(
         name=payload.name,
+        source=payload.source,
+        external_id=payload.external_id,
         retention_overrides=payload.retention_overrides,
         created_by_user_id=created_by,
     )
@@ -70,6 +72,8 @@ def list_events(
             detail="SSO session is not authorized to list events",
         )
     if user.is_machine:
+        if getattr(user, "is_platform", False):
+            return db.query(models.Event).all()
         return db.query(models.Event).filter(models.Event.id.in_(user.event_ids)).all()
     if user.role == "admin":
         return db.query(models.Event).all()
@@ -102,6 +106,12 @@ def update_event(
                 detail="Event name cannot be empty",
             )
         event.name = clean_name
+
+    if payload.source is not None:
+        event.source = payload.source
+
+    if payload.external_id is not None:
+        event.external_id = payload.external_id
 
     if payload.retention_overrides is not None:
         event.retention_overrides = payload.retention_overrides
@@ -150,26 +160,41 @@ def delete_event(
 
 
 @router.post(
-    "/{event_id}/sso-token",
+    "/{event_identifier}/sso-token",
     response_model=schemas.SSOTokenResponse,
     status_code=status.HTTP_200_OK,
 )
 def create_event_sso_token(
-    event_id: int,
+    event_identifier: str,
     client: Annotated[models.Client, Depends(get_client)],
     db: Annotated[Session, Depends(get_db)],
 ):
     """
     Issues a short-lived, event-scoped SSO token carrying role=organizer.
+    Resolves event by integer ID or external slug (external_id=event_slug).
     Requires caller to be authenticated via X-API-Key only.
     """
-    event = db.query(models.Event).filter(models.Event.id == event_id).first()
+    event = None
+    if event_identifier.isdigit():
+        event = (
+            db.query(models.Event)
+            .filter(models.Event.id == int(event_identifier))
+            .first()
+        )
+    if not event:
+        event = (
+            db.query(models.Event)
+            .filter(models.Event.external_id == event_identifier)
+            .first()
+        )
     if not event:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Event not found",
         )
-    if event_id not in (client.event_ids or []):
+    if not getattr(client, "is_platform", False) and event.id not in (
+        client.event_ids or []
+    ):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Client is not authorized to mint an SSO token for this event",
@@ -177,7 +202,7 @@ def create_event_sso_token(
 
     token = create_sso_token(
         scope_type="event",
-        scope_id=event_id,
+        scope_id=event.id,
         role="organizer",
         expires_in_seconds=settings.sso_token_expire_seconds,
     )
@@ -185,8 +210,8 @@ def create_event_sso_token(
         token=token,
         token_type="bearer",
         scope_type="event",
-        scope_id=event_id,
+        scope_id=event.id,
         role="organizer",
         expires_in_seconds=settings.sso_token_expire_seconds,
-        url=f"/studio?event_id={event_id}&sso_token={token}",
+        url=f"/studio?event_id={event.id}&sso_token={token}",
     )

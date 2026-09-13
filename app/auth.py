@@ -30,6 +30,7 @@ class CurrentUser(BaseModel):
     event_ids: list[int] = Field(default_factory=list)
     scope_type: Literal["event", "talk"] | None = None
     scope_id: int | None = None
+    is_platform: bool = False
 
     @property
     def is_machine(self) -> bool:
@@ -50,6 +51,11 @@ class CurrentUser(BaseModel):
     @property
     def is_human_admin(self) -> bool:
         return self.role == "admin" and not self.is_machine and not self.is_sso
+
+    def has_event_access(self, event_id: int) -> bool:
+        if self.is_platform or self.is_human_admin:
+            return True
+        return event_id in self.event_ids
 
 
 def hash_api_key(api_key: str) -> str:
@@ -99,6 +105,8 @@ def verify_event_access(event_id: int, client: models.Client) -> None:
     Validates that the provided client has access to the specified event_id.
     Raises a 403 Forbidden exception if the client does not have access.
     """
+    if getattr(client, "is_platform", False):
+        return
     if event_id not in client.event_ids:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -141,6 +149,7 @@ def get_current_user(
                 role="admin",
                 source="api_key",
                 event_ids=list(client.event_ids or []),
+                is_platform=bool(getattr(client, "is_platform", False)),
             )
 
     req_headers = (
@@ -196,6 +205,7 @@ def get_current_user(
             role="admin",
             source="api_key",
             event_ids=list(client.event_ids or []),
+            is_platform=bool(getattr(client, "is_platform", False)),
         )
 
     # 2. SSO header (X-SSO-Token)
@@ -417,7 +427,7 @@ def check_event_access(
     Raises HTTP 404 Not Found if the event does not exist.
     """
     if user.source == "api_key":
-        if event_id not in user.event_ids:
+        if not user.has_event_access(event_id):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Client is not authorized to access this event",
@@ -508,7 +518,7 @@ def check_talk_access(
         )
 
     if user.source == "api_key":
-        if target_talk.event_id not in user.event_ids:
+        if not user.has_event_access(target_talk.event_id):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Client is not authorized to access this talk",
