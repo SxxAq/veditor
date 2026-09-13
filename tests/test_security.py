@@ -408,6 +408,21 @@ def test_decode_sso_token_tampered():
     assert decode_sso_token(tampered) is None
 
 
+def test_decode_sso_token_missing_exp():
+    secret = get_session_secret()
+    token_without_exp = jwt.encode(
+        {
+            "type": "sso",
+            "scope_type": "event",
+            "scope_id": 1,
+            "role": "organizer",
+        },
+        key=secret,
+        algorithm="HS256",
+    )
+    assert decode_sso_token(token_without_exp) is None
+
+
 def test_decode_sso_token_rejects_user_id():
     secret = get_session_secret()
     # Craft a token that includes a user_id or sub claim

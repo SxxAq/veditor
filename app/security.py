@@ -262,7 +262,10 @@ def decode_sso_token(token: str) -> dict | None:
         return None
     try:
         payload = jwt.decode(
-            token, get_session_secret(), algorithms=list(ALLOWED_JWT_ALGORITHMS)
+            token,
+            get_session_secret(),
+            algorithms=list(ALLOWED_JWT_ALGORITHMS),
+            options={"require": ["exp"]},
         )
         if payload.get("type") != "sso":
             return None

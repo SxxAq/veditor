@@ -198,13 +198,9 @@ def get_current_user(
             event_ids=list(client.event_ids or []),
         )
 
-    # 2. SSO landing query parameter (?sso_token=...) or header (X-SSO-Token)
+    # 2. SSO header (X-SSO-Token)
     raw_sso = None
-    if request is not None and hasattr(request, "query_params"):
-        candidate = getattr(request.query_params, "get", lambda _: None)("sso_token")
-        if isinstance(candidate, str):
-            raw_sso = candidate
-    if raw_sso is None and hasattr(req_headers, "get"):
+    if hasattr(req_headers, "get"):
         candidate_header = req_headers.get("X-SSO-Token") or req_headers.get(
             "x-sso-token"
         )

@@ -773,6 +773,20 @@ def bulk_delete_talks(
             )
             .all()
         )
+    elif user.is_sso:
+        if user.scope_type != "event" or not user.scope_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="SSO session is not authorized for bulk talk deletion",
+            )
+        valid_talks = (
+            db.query(models.Talk)
+            .filter(
+                models.Talk.id.in_(payload.talk_ids),
+                models.Talk.event_id == user.scope_id,
+            )
+            .all()
+        )
     elif user.role == "admin":
         valid_talks = (
             db.query(models.Talk).filter(models.Talk.id.in_(payload.talk_ids)).all()
@@ -1147,6 +1161,18 @@ async def import_schedule(
         except ValueError, TypeError:
             pass
 
+    if user.is_sso:
+        if user.scope_type != "event" or not user.scope_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="SSO session is not authorized to import schedules",
+            )
+        if target_event_id is None or target_event_id != user.scope_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"SSO schedule import requires target_event_id matching SSO event scope ({user.scope_id})",
+            )
+
     event = None
     is_new_event = False
     if target_event_id:
@@ -1157,6 +1183,11 @@ async def import_schedule(
             check_event_access(target_event_id, user, db)
             event = existing_event
         else:
+            if user.is_sso:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Target event not found",
+                )
             created_by = user.user_id if not user.is_machine else None
             event = models.Event(name=event_name, created_by_user_id=created_by)
             db.add(event)

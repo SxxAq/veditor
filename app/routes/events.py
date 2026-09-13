@@ -26,6 +26,11 @@ def create_event(
     user: Annotated[CurrentUser, Depends(require_role("organizer"))],
     db: Annotated[Session, Depends(get_db)],
 ):
+    if user.is_sso:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="SSO sessions are not permitted to create events",
+        )
     created_by = user.user_id if not user.is_machine else None
     event = models.Event(
         name=payload.name,
@@ -57,6 +62,13 @@ def list_events(
     user: Annotated[CurrentUser, Depends(require_role("organizer"))],
     db: Annotated[Session, Depends(get_db)],
 ):
+    if user.is_sso:
+        if user.scope_type == "event" and user.scope_id:
+            return db.query(models.Event).filter(models.Event.id == user.scope_id).all()
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="SSO session is not authorized to list events",
+        )
     if user.is_machine:
         return db.query(models.Event).filter(models.Event.id.in_(user.event_ids)).all()
     if user.role == "admin":

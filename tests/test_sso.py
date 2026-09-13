@@ -253,8 +253,8 @@ def test_talk_sso_token_success(mock_db):
 # ── 3. Identity Resolution (get_current_user) ─────────────────────────────────
 
 
-def test_get_current_user_via_sso_token_query_param(mock_db):
-    """get_current_user resolves SSO token from query parameter."""
+def test_get_current_user_rejects_sso_token_query_param(mock_db):
+    """get_current_user does not accept SSO tokens from query parameters (restricted to handoff handler)."""
     token = create_sso_token(scope_type="event", scope_id=5, role="organizer")
 
     request = MagicMock()
@@ -262,16 +262,10 @@ def test_get_current_user_via_sso_token_query_param(mock_db):
     request.headers = {}
     request.cookies = {}
 
-    user = get_current_user(request=request, db=mock_db)
-    assert user.is_sso is True
-    assert user.source == "sso"
-    assert user.user_id is None
-    assert user.email is None
-    assert user.role == "organizer"
-    assert user.scope_type == "event"
-    assert user.scope_id == 5
-    assert user.is_machine is False
-    assert user.is_human is False
+    with pytest.raises(HTTPException) as exc_info:
+        get_current_user(request=request, db=mock_db)
+    assert exc_info.value.status_code == 401
+    assert "Not authenticated" in exc_info.value.detail
 
 
 def test_get_current_user_via_x_sso_token_header(mock_db):
@@ -331,10 +325,8 @@ def test_get_current_user_tampered_sso_token(mock_db):
     tampered = token[:-5] + "wrong"
 
     request = MagicMock()
-    request.query_params.get.side_effect = lambda k: (
-        tampered if k == "sso_token" else None
-    )
-    request.headers = {}
+    request.query_params.get.return_value = None
+    request.headers = {"X-SSO-Token": tampered}
     request.cookies = {}
 
     with pytest.raises(HTTPException) as exc_info:
@@ -548,3 +540,126 @@ def test_studio_dashboard_hides_action_buttons_for_sso(mock_db):
     assert 'id="modal-import"' not in html
     assert 'id="modal-attach-room"' not in html
     assert 'id="modal-quick-talk"' not in html
+
+
+# ── 6. SSO Endpoint Restrictions (Events, Bulk Delete, Import) ─────────────────
+
+
+def test_create_event_rejected_for_sso(mock_db):
+    """SSO sessions are forbidden from creating new events."""
+    event_token = create_sso_token(scope_type="event", scope_id=1, role="organizer")
+    app.dependency_overrides[get_db] = lambda: mock_db
+
+    resp = client.post(
+        "/events",
+        json={"name": "Disallowed Event"},
+        headers={"X-SSO-Token": event_token},
+    )
+    assert resp.status_code == 403
+    assert "SSO sessions are not permitted to create events" in resp.json()["detail"]
+
+
+def test_list_events_sso_scoping(mock_db):
+    """Event SSO only sees its scoped event; talk SSO is forbidden."""
+    event_token = create_sso_token(scope_type="event", scope_id=42, role="organizer")
+    talk_token = create_sso_token(scope_type="talk", scope_id=10, role="speaker")
+
+    app.dependency_overrides[get_db] = lambda: mock_db
+    scoped_event = models.Event(id=42, name="Scoped Conf")
+    mock_db.query.return_value.filter.return_value.all.return_value = [scoped_event]
+
+    # Event SSO succeeds and gets only scoped event
+    resp = client.get("/events", headers={"X-SSO-Token": event_token})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data) == 1
+    assert data[0]["id"] == 42
+
+    # Talk SSO is forbidden
+    resp = client.get("/events", headers={"X-SSO-Token": talk_token})
+    assert resp.status_code == 403
+
+
+def test_bulk_delete_talks_sso_scoping(mock_db):
+    """Event SSO only deletes talks within its scoped event; talk SSO is rejected."""
+    event_token = create_sso_token(scope_type="event", scope_id=1, role="organizer")
+    talk_token = create_sso_token(scope_type="talk", scope_id=10, role="speaker")
+
+    app.dependency_overrides[get_db] = lambda: mock_db
+
+    # Talk SSO is forbidden
+    resp = client.post(
+        "/talks/bulk-delete",
+        json={"talk_ids": [10]},
+        headers={"X-SSO-Token": talk_token},
+    )
+    assert resp.status_code == 403
+
+    # Event SSO filters by Talk.event_id == user.scope_id
+    t1 = models.Talk(id=1, event_id=1, status="done")
+    mock_db.query.return_value.filter.return_value.all.return_value = [t1]
+    mock_db.query.return_value.filter.return_value.delete.return_value = 1
+
+    resp = client.post(
+        "/talks/bulk-delete",
+        json={"talk_ids": [1, 2]},
+        headers={"X-SSO-Token": event_token},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["deleted_count"] == 1
+
+
+def test_import_schedule_sso_scoping(mock_db):
+    """SSO schedule import requires event scope and explicit matching target_event_id."""
+    event_token = create_sso_token(scope_type="event", scope_id=5, role="organizer")
+    talk_token = create_sso_token(scope_type="talk", scope_id=10, role="speaker")
+
+    app.dependency_overrides[get_db] = lambda: mock_db
+
+    payload = {
+        "event_name": "Test Event",
+        "talks": [
+            {
+                "title": "Opening Talk",
+                "room": "Room A",
+                "start": "2026-09-20T10:00:00Z",
+                "end": "2026-09-20T11:00:00Z",
+            }
+        ],
+    }
+
+    # 1. Talk-scoped SSO rejected with 403
+    resp = client.post(
+        "/talks/schedule/import",
+        json=payload,
+        headers={"X-SSO-Token": talk_token},
+    )
+    assert resp.status_code == 403
+
+    # 2. Event SSO without target_event_id rejected with 400
+    resp = client.post(
+        "/talks/schedule/import",
+        json=payload,
+        headers={"X-SSO-Token": event_token},
+    )
+    assert resp.status_code == 400
+    assert "target_event_id matching SSO event scope" in resp.json()["detail"]
+
+    # 3. Event SSO with mismatched target_event_id rejected with 400
+    payload_mismatch = dict(payload, event_id=99)
+    resp = client.post(
+        "/talks/schedule/import",
+        json=payload_mismatch,
+        headers={"X-SSO-Token": event_token},
+    )
+    assert resp.status_code == 400
+
+    # 4. Event SSO with matching target_event_id but event nonexistent in DB -> 404
+    payload_matching = dict(payload, event_id=5)
+    mock_db.query.return_value.filter.return_value.first.return_value = None
+    resp = client.post(
+        "/talks/schedule/import",
+        json=payload_matching,
+        headers={"X-SSO-Token": event_token},
+    )
+    assert resp.status_code == 404
