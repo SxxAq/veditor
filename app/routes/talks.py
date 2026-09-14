@@ -26,6 +26,8 @@ from app import models, schemas
 from app.auth import (
     CurrentUser,
     check_event_access,
+    check_talk_access,
+    get_client,
     get_current_user,
     require_role,
 )
@@ -38,12 +40,14 @@ from app.ingest import (
     stage_recording,
 )
 from app.queue import heavy_queue, light_queue
+from app.security import create_sso_token
 from app.states import advance
 from app.storage import StorageBackend, cleanup_intermediates, get_storage_backend
 from app.tasks import (
     STAGE_CONFIG,
     dispatch_assembly,
     job_cut,
+    job_deliver_webhook,
     job_detect,
     job_ingest,
 )
@@ -68,6 +72,11 @@ def create_or_update_talk(
     Idempotent on the natural key (event_id, title, start).
     Returns 201 Created on insert, 200 OK on update (preserving existing talk status).
     """
+    if user.is_sso:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="SSO sessions are not permitted to create talks",
+        )
     check_event_access(payload.event_id, user, db)
 
     talk = (
@@ -139,7 +148,7 @@ def get_talk(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Talk not found"
         )
-    check_event_access(talk.event_id, user, db)
+    check_talk_access(talk, user, db)
 
     candidate_keys = [
         f"{talk.id}/preview/{name}.mp4" for name in settings.preview_presets
@@ -166,7 +175,7 @@ def get_talk_jobs(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Talk not found"
         )
-    check_event_access(talk.event_id, user, db)
+    check_talk_access(talk, user, db)
     jobs = (
         db.query(models.Job)
         .filter(models.Job.talk_id == talk_id)
@@ -266,7 +275,12 @@ def approve_talk(
     Returns 404 if talk not found or not in caller's event_ids.
     Returns 409 if talk status is not 'pending_approval'.
     """
-    talk = db.query(models.Talk).filter(models.Talk.id == talk_id).first()
+    talk = (
+        db.query(models.Talk)
+        .filter(models.Talk.id == talk_id)
+        .with_for_update()
+        .first()
+    )
     if not talk or (user.is_machine and talk.event_id not in user.event_ids):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Talk not found"
@@ -293,6 +307,84 @@ def approve_talk(
         cleanup_intermediates(storage, talk_id)
 
     return schemas.TalkRead.model_validate(talk)
+
+
+def _dispatch_talk_cut_webhook(
+    talk: models.Talk,
+    user: CurrentUser,
+    db: Session,
+) -> None:
+    try:
+        candidate_clients: list[models.Client] = []
+        try:
+            candidate_clients = (
+                db.query(models.Client)
+                .filter(
+                    models.Client.event_ids.any(talk.event_id),
+                    models.Client.webhook_url.is_not(None),
+                )
+                .all()
+            )
+        except Exception:  # noqa: BLE001
+            candidate_clients = []
+
+        if not candidate_clients:
+            all_clients = (
+                db.query(models.Client)
+                .filter(models.Client.webhook_url.is_not(None))
+                .all()
+            )
+            candidate_clients = [
+                c
+                for c in all_clients
+                if isinstance(getattr(c, "event_ids", None), list)
+                and talk.event_id in c.event_ids
+            ]
+
+        if not candidate_clients and user.is_machine and user.client_id:
+            client_record = (
+                db.query(models.Client)
+                .filter(
+                    models.Client.id == user.client_id,
+                    models.Client.webhook_url.is_not(None),
+                )
+                .first()
+            )
+            if client_record and isinstance(client_record, models.Client):
+                candidate_clients = [client_record]
+
+        for c in candidate_clients:
+            if not isinstance(c, models.Client):
+                continue
+            webhook_url = c.webhook_url
+            webhook_secret = c.webhook_secret
+            if webhook_url and webhook_secret:
+                payload_data = {
+                    "talk_id": talk.id,
+                    "event_id": talk.event_id,
+                    "timestamp": datetime.now(UTC).isoformat(),
+                }
+                try:
+                    light_queue.enqueue(
+                        job_deliver_webhook,
+                        webhook_url,
+                        webhook_secret,
+                        payload_data,
+                        job_timeout=30,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "Failed to enqueue webhook notification for talk %d to client %s: %s",
+                        talk.id,
+                        getattr(c, "id", None),
+                        exc,
+                    )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "Failed to dispatch webhook notification for talk %d: %s",
+            talk.id,
+            exc,
+        )
 
 
 RAW_PREVIEW_ALLOWED_STATES = frozenset(
@@ -332,7 +424,7 @@ def raw_preview(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Talk not found"
         )
-    check_event_access(talk.event_id, user, db)
+    check_talk_access(talk, user, db)
 
     if talk.status not in RAW_PREVIEW_ALLOWED_STATES:
         raise HTTPException(
@@ -357,7 +449,7 @@ def raw_preview(
 def submit_cut_bounds(
     talk_id: int,
     payload: schemas.CutBoundsRequest,
-    user: Annotated[CurrentUser, Depends(require_role("organizer"))],
+    user: Annotated[CurrentUser, Depends(get_current_user)],
     db: Annotated[Session, Depends(get_db)],
     storage: Annotated[StorageBackend, Depends(get_storage_backend)],
 ):
@@ -367,12 +459,25 @@ def submit_cut_bounds(
     Persists bounds on Talk, advances state to cutting, enqueues job_cut.
     Returns 409 if not in pending_bounds. Returns 422 if bounds are invalid.
     """
-    talk = db.query(models.Talk).filter(models.Talk.id == talk_id).first()
+    talk = (
+        db.query(models.Talk)
+        .filter(models.Talk.id == talk_id)
+        .with_for_update()
+        .first()
+    )
     if not talk or (user.is_machine and talk.event_id not in user.event_ids):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Talk not found"
         )
-    check_event_access(talk.event_id, user, db)
+    if user.source == "sso":
+        check_talk_access(talk, user, db)
+    else:
+        if user.role not in ("organizer", "admin") and not user.is_machine:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Operation requires minimum role 'organizer'",
+            )
+        check_event_access(talk.event_id, user, db)
 
     if talk.status != "pending_bounds":
         raise HTTPException(
@@ -420,6 +525,8 @@ def submit_cut_bounds(
         raw_key,
         job_timeout=STAGE_CONFIG["cut"]["job_timeout"],
     )
+
+    _dispatch_talk_cut_webhook(talk, user, db)
 
     return schemas.TalkRead.model_validate(talk)
 
@@ -669,6 +776,11 @@ def update_talk(
     Updates editable talk metadata (title, room).
     Returns 404 if talk is not found or not in caller's event_ids.
     """
+    if user.is_sso:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="SSO sessions are not permitted to modify talk metadata",
+        )
     talk = db.query(models.Talk).filter(models.Talk.id == talk_id).first()
     if not talk or (user.is_machine and talk.event_id not in user.event_ids):
         raise HTTPException(
@@ -723,6 +835,11 @@ def delete_talk(
     Deletes a talk and all associated storage artifacts, jobs, and reviews.
     Returns 404 if talk is not found or not in caller's event_ids.
     """
+    if user.is_sso:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="SSO sessions are not permitted to delete talks",
+        )
     talk = db.query(models.Talk).filter(models.Talk.id == talk_id).first()
     if not talk or (user.is_machine and talk.event_id not in user.event_ids):
         raise HTTPException(
@@ -752,6 +869,12 @@ def bulk_delete_talks(
     """
     if not payload.talk_ids:
         return {"status": "ok", "deleted_count": 0}
+
+    if user.is_sso:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="SSO sessions are not permitted to bulk delete talks",
+        )
 
     if user.is_machine:
         valid_talks = (
@@ -930,6 +1053,11 @@ async def import_schedule(
     """
     Imports talks in bulk from Frab/Pretalx JSON or simple JSON lists.
     """
+    if user.is_sso:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="SSO sessions are not permitted to import schedules",
+        )
     data = None
     if file and file.filename:
         content_len = request.headers.get("content-length")
@@ -1234,3 +1362,46 @@ async def import_schedule(
         "event_name": event.name,
         "imported_count": created_count,
     }
+
+
+@router.post(
+    "/{talk_id}/sso-token",
+    response_model=schemas.SSOTokenResponse,
+    status_code=status.HTTP_200_OK,
+)
+def create_talk_sso_token(
+    talk_id: int,
+    client: Annotated[models.Client, Depends(get_client)],
+    db: Annotated[Session, Depends(get_db)],
+):
+    """
+    Issues a short-lived, talk-scoped SSO token carrying role=speaker.
+    Requires caller to be authenticated via X-API-Key only.
+    """
+    talk = db.query(models.Talk).filter(models.Talk.id == talk_id).first()
+    if not talk:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Talk not found",
+        )
+    if talk.event_id not in (client.event_ids or []):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Client is not authorized to mint an SSO token for this talk",
+        )
+
+    token = create_sso_token(
+        scope_type="talk",
+        scope_id=talk_id,
+        role="speaker",
+        expires_in_seconds=settings.sso_token_expire_seconds,
+    )
+    return schemas.SSOTokenResponse(
+        token=token,
+        token_type="bearer",
+        scope_type="talk",
+        scope_id=talk_id,
+        role="speaker",
+        expires_in_seconds=settings.sso_token_expire_seconds,
+        url=f"/studio/talks/{talk_id}?sso_token={token}",
+    )
