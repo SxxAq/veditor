@@ -6,11 +6,23 @@ from fastapi.testclient import TestClient
 
 from app import models
 from app.auth import get_client
-from app.db import get_db
+from app.db import SessionLocal, get_db
 from app.main import app
 from app.storage import get_storage_backend
 
 client = TestClient(app)
+
+
+@pytest.fixture
+def db_session():
+    db = SessionLocal()
+    app.dependency_overrides[get_db] = lambda: db
+    try:
+        yield db
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+        db.rollback()
+        db.close()
 
 
 # ---------------------------------------------------------------------------
@@ -577,12 +589,12 @@ def test_abort_talk_from_any_state():
 
 
 # ---------------------------------------------------------------------------
-# End-to-End Integration Tests
+# Lifecycle & Orchestration Tests
 # ---------------------------------------------------------------------------
 
 
-def test_e2e_full_lifecycle_ingest_to_done():
-    """End-to-End integration test covering the complete talk processing lifecycle.
+def test_lifecycle_full_ingest_to_done():
+    """Mock-driven orchestration test covering the complete talk processing lifecycle.
 
     Drives a talk from ingest -> detecting -> pending_approval -> approve ->
     pending_bounds -> cutting -> generating_previews -> preview ->
@@ -868,97 +880,103 @@ def test_e2e_full_lifecycle_ingest_to_done():
             _clear_deps()
 
 
-def test_e2e_cross_tenant_event_scoping_isolation():
-    """Assert cross-tenant scoping isolation across all talk and job endpoints.
+def test_cross_tenant_event_scoping_isolation(db_session):
+    """Assert cross-tenant scoping isolation across all talk and job endpoints against a real database.
 
     Verifies that a client authorized only for event_id=2 receives 404 Not Found (or 403 Forbidden)
     and cannot inspect or mutate talks/jobs belonging to event_id=1.
     """
-    mock_db = MagicMock()
-    mock_storage = MagicMock()
-    talk = _mock_talk(talk_id=1, event_id=1, status="waiting_for_files")
-    job = models.Job(id=42, talk_id=1, kind="detect", status="done")
-    job.talk = talk
+    event1 = models.Event(name="Tenant A Event")
+    event2 = models.Event(name="Tenant B Event")
+    db_session.add_all([event1, event2])
+    db_session.commit()
 
-    def query_mock(model):
-        q = MagicMock()
-        if model == models.Talk:
-            q.filter.return_value.first.return_value = talk
-            q.filter.return_value.with_for_update.return_value.first.return_value = talk
-        elif model == models.Job:
-            q.filter.return_value.first.return_value = job
-        return q
+    talk = models.Talk(
+        event_id=event1.id,
+        title="Tenant A Talk",
+        room="Room 1",
+        start=datetime.now(UTC),
+        end=datetime.now(UTC),
+        status="waiting_for_files",
+    )
+    db_session.add(talk)
+    db_session.commit()
 
-    mock_db.query.side_effect = query_mock
-    # Client B only has access to event_id=2
-    _setup_deps(mock_db, mock_storage, event_ids=[2])
+    job = models.Job(talk_id=talk.id, kind="detect", status="done")
+    db_session.add(job)
+    db_session.commit()
+
+    # Authenticated client scoped strictly to event2 (Tenant B)
+    client_b = models.Client(id=2, event_ids=[event2.id])
+    app.dependency_overrides[get_client] = lambda: client_b
 
     try:
-        # 1. GET /talks/1 -> 404
-        r1 = client.get("/talks/1", headers={"X-API-Key": "client_b"})
+        # 1. GET /talks/{talk.id} -> 404
+        r1 = client.get(f"/talks/{talk.id}", headers={"X-API-Key": "client_b"})
         assert r1.status_code == 404
         assert r1.json()["detail"] == "Talk not found"
 
-        # 2. GET /jobs/42 -> 404
-        r2 = client.get("/jobs/42", headers={"X-API-Key": "client_b"})
+        # 2. GET /jobs/{job.id} -> 404
+        r2 = client.get(f"/jobs/{job.id}", headers={"X-API-Key": "client_b"})
         assert r2.status_code == 404
         assert r2.json()["detail"] == "Job not found"
 
-        # 3. POST /talks/1/recordings -> 404
+        # 3. POST /talks/{talk.id}/recordings -> 404
         r3 = client.post(
-            "/talks/1/recordings",
+            f"/talks/{talk.id}/recordings",
             json={"source_path": "/tmp/test.mp4"},
             headers={"X-API-Key": "client_b"},
         )
         assert r3.status_code == 404
         assert r3.json()["detail"] == "Talk not found"
 
-        # 4. POST /talks/1/approve -> 404
+        # 4. POST /talks/{talk.id}/approve -> 404
         r4 = client.post(
-            "/talks/1/approve",
+            f"/talks/{talk.id}/approve",
             json={"decision": "approve"},
             headers={"X-API-Key": "client_b"},
         )
         assert r4.status_code == 404
         assert r4.json()["detail"] == "Talk not found"
 
-        # 5. POST /talks/1/cut -> 404
+        # 5. POST /talks/{talk.id}/cut -> 404
         r5 = client.post(
-            "/talks/1/cut",
+            f"/talks/{talk.id}/cut",
             json={"cut_start": "00:00:10", "cut_end": "00:20:00"},
             headers={"X-API-Key": "client_b"},
         )
         assert r5.status_code == 404
         assert r5.json()["detail"] == "Talk not found"
 
-        # 6. POST /talks/1/abort -> 404
+        # 6. POST /talks/{talk.id}/abort -> 404
         r6 = client.post(
-            "/talks/1/abort",
+            f"/talks/{talk.id}/abort",
             headers={"X-API-Key": "client_b"},
         )
         assert r6.status_code == 404
         assert r6.json()["detail"] == "Talk not found"
 
-        # 7. GET /talks/1/raw-preview -> 404
+        # 7. GET /talks/{talk.id}/raw-preview -> 404
         r7 = client.get(
-            "/talks/1/raw-preview",
+            f"/talks/{talk.id}/raw-preview",
             headers={"X-API-Key": "client_b"},
         )
         assert r7.status_code == 404
         assert r7.json()["detail"] == "Talk not found"
 
-        # 8. POST /talks/1/review -> 403 (unauthorized event)
+        # 8. POST /talks/{talk.id}/review -> 403 (unauthorized event)
         r8 = client.post(
-            "/talks/1/review",
+            f"/talks/{talk.id}/review",
             json={"decision": "approve"},
             headers={"X-API-Key": "client_b"},
         )
         assert r8.status_code == 403
 
         # Ensure talk state was not modified
+        db_session.refresh(talk)
         assert talk.status == "waiting_for_files"
     finally:
-        _clear_deps()
+        app.dependency_overrides.pop(get_client, None)
 
 
 # ---------------------------------------------------------------------------
@@ -1280,12 +1298,8 @@ def test_e2e_rq_driven_lifecycle_ingest_to_preview():
 # ---------------------------------------------------------------------------
 
 
-def test_e2e_disk_guard_insufficient_storage():
-    """Verify that insufficient disk storage guards against recording ingestion.
-
-    Asserts that when free_bytes() is below required space, POST /talks/{id}/recordings
-    returns 507 Insufficient Storage and no state change or job creation occurs.
-    """
+def test_lifecycle_disk_guard_insufficient_storage():
+    """Verify that insufficient disk storage guards against recording ingestion."""
     from app.ingest import InsufficientStorageError
 
     talk = _mock_talk(talk_id=1, status="waiting_for_files")
@@ -1319,7 +1333,7 @@ def test_e2e_disk_guard_insufficient_storage():
             _clear_deps()
 
 
-def test_e2e_full_approve_review_flow_to_done():
+def test_lifecycle_full_approve_review_flow_to_done():
     """Drive a talk from preview through review approve, assembly, and publishing to done.
 
     Validates review submission, pending_intro_outro transition, assembly orchestration,
@@ -1491,7 +1505,7 @@ def test_e2e_full_approve_review_flow_to_done():
             _clear_deps()
 
 
-def test_e2e_needs_work_review_loop():
+def test_lifecycle_needs_work_review_loop():
     """Drive consecutive needs_work cycles, verifying return to preview without stale jobs."""
     from pathlib import Path
 
@@ -1628,7 +1642,7 @@ def test_e2e_needs_work_review_loop():
             _clear_deps()
 
 
-def test_e2e_initial_approval_reject_flow():
+def test_lifecycle_initial_approval_reject_flow():
     """Verify initial approve reject transitions talk from pending_approval to terminal rejected."""
     mock_db = MagicMock()
     talk = _mock_talk(talk_id=1, status="pending_approval")
@@ -1651,7 +1665,7 @@ def test_e2e_initial_approval_reject_flow():
         _clear_deps()
 
 
-def test_e2e_speaker_review_reject_and_storage_cleanup():
+def test_lifecycle_speaker_review_reject_and_storage_cleanup():
     """Verify speaker review reject clears cut bounds, resets to pending_bounds, and deletes staging storage."""
     mock_db = MagicMock()
     mock_storage = MagicMock()
@@ -1706,7 +1720,7 @@ def test_e2e_speaker_review_reject_and_storage_cleanup():
         _clear_deps()
 
 
-def test_e2e_job_progress_tracking_transcode_polling():
+def test_job_progress_tracking_transcode_polling():
     """Verify Job.progress_pct updates across sequential polls with timing metadata."""
     from datetime import timedelta
 
