@@ -744,7 +744,7 @@ def create_studio_event(
     db.refresh(event)
 
     return RedirectResponse(
-        url=f"/studio?event_id={event.id}",
+        url="/studio/events",
         status_code=status.HTTP_303_SEE_OTHER,
     )
 

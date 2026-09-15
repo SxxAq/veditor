@@ -1414,6 +1414,11 @@ async def import_schedule(
                 .first()
             )
 
+    if not event and user.is_machine and user.event_ids:
+        event = (
+            db.query(models.Event).filter(models.Event.id == user.event_ids[0]).first()
+        )
+
     if not event:
         created_by = user.user_id if not user.is_machine else None
         event = models.Event(name=event_name, created_by_user_id=created_by)
