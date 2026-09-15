@@ -921,3 +921,23 @@ def test_get_current_user_populates_identity_from_sso(mock_db):
     assert user.display_name == "Lead Organizer"
     assert user.is_sso is True
     assert user.event_ids == [1]
+
+
+def test_studio_dashboard_displays_sso_email_identity(mock_db):
+    """When an SSO token contains an email, the topbar displays the user's email address."""
+    event_token = create_sso_token(
+        scope_type="event",
+        scope_id=1,
+        role="organizer",
+        email="organizer@eventyay.com",
+        display_name="Organizer User",
+    )
+    app.dependency_overrides[get_db] = lambda: mock_db
+    mock_db.query.return_value.filter.return_value.all.return_value = []
+    mock_db.query.return_value.filter.return_value.first.return_value = models.Event(
+        id=1, name="Test Conf"
+    )
+
+    response = client.get("/studio", cookies={"veditor_session": event_token})
+    assert response.status_code == 200
+    assert "organizer@eventyay.com" in response.text

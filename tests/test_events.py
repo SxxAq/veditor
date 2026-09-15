@@ -667,3 +667,21 @@ def test_revoke_event_api_key(mock_db):
     assert res.status_code == 200
     assert res.json() == {"status": "ok", "deleted_id": 101}
     mock_db.delete.assert_called_with(c1)
+
+
+def test_create_event_api_key_revokes_existing_keys(mock_db):
+    event = models.Event(id=1, name="Test Event", created_by_user_id=5)
+    existing_c = models.Client(
+        id=99, name="Old Key", hashed_key="old_hash", event_ids=[1]
+    )
+    mock_db.query.return_value.filter.return_value.first.return_value = event
+    mock_db.query.return_value.filter.return_value.all.return_value = [existing_c]
+    app.dependency_overrides[get_db] = lambda: mock_db
+    app.dependency_overrides[get_current_user] = lambda: CurrentUser(
+        user_id=5, role="organizer", source="jwt"
+    )
+
+    res = client.post("/events/1/api-keys", json={"name": "Rotated Key"})
+    assert res.status_code == 201
+    assert mock_db.delete.called
+    assert mock_db.delete.call_args[0][0] == existing_c

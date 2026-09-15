@@ -298,6 +298,15 @@ def create_event_api_key(
     )
     webhook_url = payload.webhook_url if payload else None
 
+    # Enforce at most 1 active API key per event by revoking previous key(s)
+    all_clients = (
+        db.query(models.Client).filter(models.Client.is_platform.is_(False)).all()
+    )
+    for existing_c in all_clients:
+        if event_id in (existing_c.event_ids or []):
+            db.delete(existing_c)
+    db.flush()
+
     client = models.Client(
         hashed_key=hashed_key,
         event_ids=[event_id],

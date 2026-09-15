@@ -137,8 +137,8 @@
   <div class="events-modal-card events-modal-card-lg">
     <div class="events-modal-header">
       <div>
-        <h3 class="events-modal-title">API Keys for <span id="api-keys-event-name-display"></span></h3>
-        <p class="events-modal-desc">Use these credentials to connect external platforms (e.g. Eventyay) with this event.</p>
+        <h3 class="events-modal-title">API Key for <span id="api-keys-event-name-display"></span></h3>
+        <p class="events-modal-desc">Manage API credentials to integrate conference schedules and video pipelines with this event.</p>
       </div>
       <button type="button" class="btn btn-ghost btn-sm btn-close-api-keys-modal">✕</button>
     </div>
@@ -163,14 +163,14 @@
         <button type="button" class="btn btn-primary btn-sm" id="btn-copy-new-key">Copy Key</button>
       </div>
       <div class="new-key-tip">
-        <span>Paste this API Key and Event ID into Eventyay's VEditor plugin settings.</span>
+        <span>Copy this API key now. It is event-scoped and can be used directly in your integration settings.</span>
       </div>
     </div>
 
     <!-- Active Keys Section -->
     <div class="api-keys-section">
       <div class="api-keys-section-header">
-        <h4 class="api-keys-subtitle">Active API Keys</h4>
+        <h4 class="api-keys-subtitle">Active API Key</h4>
         <button type="button" class="btn btn-primary btn-sm" id="btn-generate-api-key">
           + Generate API Key
         </button>
@@ -192,7 +192,7 @@
             <!-- Populated dynamically via fetch -->
           </tbody>
         </table>
-        <p id="api-keys-empty" class="text-muted text-center api-key-alert-hidden api-keys-empty-msg">No active API keys found. Click "+ Generate API Key" above to create one.</p>
+        <p id="api-keys-empty" class="text-muted text-center api-key-alert-hidden api-keys-empty-msg">No active API key found. Click "+ Generate API Key" above to create one.</p>
       </div>
     </div>
 

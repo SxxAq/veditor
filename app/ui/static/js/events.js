@@ -95,16 +95,29 @@ document.addEventListener('DOMContentLoaded', () => {
 
       if (!keys || keys.length === 0) {
         if (apiKeysEmpty) apiKeysEmpty.classList.remove('api-key-alert-hidden');
+        if (btnGenerateKey) {
+          btnGenerateKey.textContent = '+ Generate API Key';
+          btnGenerateKey.setAttribute('data-has-key', 'false');
+        }
         return;
       }
 
       if (apiKeysEmpty) apiKeysEmpty.classList.add('api-key-alert-hidden');
+      if (btnGenerateKey) {
+        btnGenerateKey.textContent = '↻ Regenerate Key';
+        btnGenerateKey.setAttribute('data-has-key', 'true');
+      }
+
       keys.forEach(k => {
+        const createdStr = k.created_at ? new Date(k.created_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—';
+        const lastUsedStr = k.last_used_at ? new Date(k.last_used_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : 'Never';
         const tr = document.createElement('tr');
         tr.innerHTML = `
           <td class="td-mono">#${k.id}</td>
           <td>${escapeHtml(k.name || 'API Key')}</td>
           <td><code class="input-mono">${escapeHtml(k.masked_key)}</code></td>
+          <td class="text-muted" style="font-size: 12px;">${createdStr}</td>
+          <td class="text-muted" style="font-size: 12px;">${lastUsedStr}</td>
           <td class="col-actions-right">
             <button type="button" class="btn btn-ghost btn-xs btn-danger-ghost btn-revoke-key" data-key-id="${k.id}">Revoke</button>
           </td>
@@ -185,14 +198,20 @@ document.addEventListener('DOMContentLoaded', () => {
   if (btnGenerateKey) {
     btnGenerateKey.addEventListener('click', async () => {
       if (!currentActiveEventId) return;
+      const hasKey = btnGenerateKey.getAttribute('data-has-key') === 'true';
+      if (hasKey) {
+        if (!confirm('An active API key already exists for this event. Regenerating will revoke the current key immediately. Are you sure you want to proceed?')) {
+          return;
+        }
+      }
       btnGenerateKey.disabled = true;
-      btnGenerateKey.textContent = 'Generating...';
+      btnGenerateKey.textContent = hasKey ? 'Regenerating...' : 'Generating...';
 
       try {
         const resp = await fetch(`/events/${currentActiveEventId}/api-keys`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name: 'Eventyay Integration Key' })
+          body: JSON.stringify({ name: 'Platform Integration Key' })
         });
         if (resp.ok) {
           const data = await resp.json();
@@ -206,7 +225,7 @@ document.addEventListener('DOMContentLoaded', () => {
         alert('Error generating key: ' + err);
       } finally {
         btnGenerateKey.disabled = false;
-        btnGenerateKey.textContent = '+ Generate API Key';
+        btnGenerateKey.textContent = btnGenerateKey.getAttribute('data-has-key') === 'true' ? '↻ Regenerate Key' : '+ Generate API Key';
       }
     });
   }
