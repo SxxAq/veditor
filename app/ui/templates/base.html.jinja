@@ -44,7 +44,7 @@
         <!-- Dynamic Authentication State -->
         {% if user %}
           {% if user.is_sso %}
-            <span class="user-email">SSO ({{ user.role | capitalize }})</span>
+            <span class="user-email">{{ user.display_name or user.email or ('SSO (' ~ user.role | capitalize ~ ')') }}</span>
           {% elif user.email %}
             <span class="user-email">{{ user.email }}</span>
           {% endif %}

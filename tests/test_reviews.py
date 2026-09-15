@@ -877,7 +877,7 @@ def test_review_human_user_role_forbidden(mock_db, preview_talk):
         json={"decision": "approve"},
     )
     assert response.status_code == 403
-    assert "Operation requires minimum role 'organizer'" in response.json()["detail"]
+    assert "Operation requires minimum role 'reviewer'" in response.json()["detail"]
 
 
 def test_review_human_organizer_unowned_event_forbidden(mock_db, preview_talk):

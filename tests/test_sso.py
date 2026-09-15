@@ -876,3 +876,48 @@ def test_import_schedule_rejected_for_sso(mock_db):
     )
     assert resp.status_code == 403
     assert "SSO sessions are not permitted to import schedules" in resp.json()["detail"]
+
+
+def test_sso_token_reviewer_role_and_identity():
+    """Verify reviewer role and identity claims (email, display_name) in SSO token."""
+    token = create_sso_token(
+        scope_type="event",
+        scope_id=42,
+        role="reviewer",
+        email="reviewer@example.org",
+        display_name="Lead Reviewer",
+    )
+    payload = decode_sso_token(token)
+    assert payload is not None
+    assert payload["role"] == "reviewer"
+    assert payload["email"] == "reviewer@example.org"
+    assert payload["display_name"] == "Lead Reviewer"
+    assert payload["scope_type"] == "event"
+    assert payload["scope_id"] == 42
+
+
+def test_get_current_user_populates_identity_from_sso(mock_db):
+    """Verify CurrentUser retains email and display_name from SSO JWT."""
+    token = create_sso_token(
+        scope_type="event",
+        scope_id=1,
+        role="reviewer",
+        email="reviewer@example.org",
+        display_name="Lead Reviewer",
+    )
+    request = MagicMock()
+    request.query_params.get.return_value = None
+    request.headers = {"Authorization": f"Bearer {token}"}
+    request.cookies = {}
+
+    bearer = HTTPAuthorizationCredentials(scheme="Bearer", credentials=token)
+    user = get_current_user(
+        request=request,
+        db=mock_db,
+        bearer_creds=bearer,
+    )
+    assert user.role == "reviewer"
+    assert user.email == "reviewer@example.org"
+    assert user.display_name == "Lead Reviewer"
+    assert user.is_sso is True
+    assert user.event_ids == [1]

@@ -1515,6 +1515,7 @@ def create_talk_sso_token(
     talk_identifier: str,
     client: Annotated[models.Client, Depends(get_client)],
     db: Annotated[Session, Depends(get_db)],
+    payload: schemas.TalkSSOTokenRequest | None = None,
 ):
     """
     Issues a short-lived, talk-scoped SSO token carrying role=speaker.
@@ -1545,11 +1546,16 @@ def create_talk_sso_token(
             detail="Client is not authorized to mint an SSO token for this talk",
         )
 
+    target_email = payload.email if payload else None
+    target_display_name = payload.display_name if payload else None
+
     token = create_sso_token(
         scope_type="talk",
         scope_id=talk.id,
         role="speaker",
         expires_in_seconds=settings.sso_token_expire_seconds,
+        email=target_email,
+        display_name=target_display_name,
     )
     return schemas.SSOTokenResponse(
         token=token,

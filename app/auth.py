@@ -16,8 +16,9 @@ bearer_security = HTTPBearer(auto_error=False)
 ROLE_HIERARCHY: dict[str, int] = {
     "speaker": 0,
     "user": 0,
-    "organizer": 1,
-    "admin": 2,
+    "reviewer": 1,
+    "organizer": 2,
+    "admin": 3,
 }
 
 
@@ -25,7 +26,8 @@ class CurrentUser(BaseModel):
     user_id: int | None = None
     client_id: int | None = None
     email: str | None = None
-    role: Literal["user", "organizer", "speaker", "admin"] = "user"
+    display_name: str | None = None
+    role: Literal["user", "organizer", "speaker", "reviewer", "admin"] = "user"
     source: Literal["api_key", "cookie", "jwt", "sso"]
     event_ids: list[int] = Field(default_factory=list)
     scope_type: Literal["event", "talk"] | None = None
@@ -234,7 +236,8 @@ def get_current_user(
         return CurrentUser(
             user_id=None,
             client_id=None,
-            email=None,
+            email=sso_payload.get("email"),
+            display_name=sso_payload.get("display_name"),
             role=sso_payload["role"],
             source="sso",
             event_ids=[sso_payload["scope_id"]]
@@ -264,7 +267,8 @@ def get_current_user(
             return CurrentUser(
                 user_id=None,
                 client_id=None,
-                email=None,
+                email=sso_payload.get("email"),
+                display_name=sso_payload.get("display_name"),
                 role=sso_payload["role"],
                 source="sso",
                 event_ids=[sso_payload["scope_id"]]
@@ -347,7 +351,8 @@ def get_current_user(
             return CurrentUser(
                 user_id=None,
                 client_id=None,
-                email=None,
+                email=sso_payload.get("email"),
+                display_name=sso_payload.get("display_name"),
                 role=sso_payload["role"],
                 source="sso",
                 event_ids=[sso_payload["scope_id"]]

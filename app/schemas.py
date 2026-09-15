@@ -344,6 +344,39 @@ class UserPromoteRequest(BaseModel):
     role: Literal["user", "organizer", "admin"]
 
 
+class EventSSOTokenRequest(BaseModel):
+    role: Literal["organizer", "reviewer"] = "organizer"
+    email: str | None = None
+    display_name: str | None = None
+
+
+class TalkSSOTokenRequest(BaseModel):
+    role: Literal["speaker"] = "speaker"
+    email: str | None = None
+    display_name: str | None = None
+
+
+class ApiKeyRead(BaseModel):
+    id: int
+    name: str | None = None
+    masked_key: str
+    event_ids: list[int] = []
+    webhook_url: str | None = None
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ApiKeyCreate(BaseModel):
+    name: str | None = None
+    webhook_url: str | None = None
+
+
+class ApiKeyCreatedResponse(BaseModel):
+    id: int
+    name: str | None = None
+    api_key: str
+    event_id: int
+
+
 class SSOTokenResponse(BaseModel):
     token: str
     token_type: str = "bearer"

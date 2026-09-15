@@ -1,11 +1,18 @@
 import logging
+import secrets
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from app import models, schemas
-from app.auth import CurrentUser, check_event_access, get_client, require_role
+from app.auth import (
+    CurrentUser,
+    check_event_access,
+    get_client,
+    hash_api_key,
+    require_role,
+)
 from app.config import settings
 from app.db import get_db
 from app.routes.talks import _cancel_talk_jobs
@@ -168,9 +175,10 @@ def create_event_sso_token(
     event_identifier: str,
     client: Annotated[models.Client, Depends(get_client)],
     db: Annotated[Session, Depends(get_db)],
+    payload: schemas.EventSSOTokenRequest | None = None,
 ):
     """
-    Issues a short-lived, event-scoped SSO token carrying role=organizer.
+    Issues a short-lived, event-scoped SSO token carrying role=organizer or reviewer.
     Resolves event by integer ID or external slug (external_id=event_slug).
     Requires caller to be authenticated via X-API-Key only.
     """
@@ -200,18 +208,137 @@ def create_event_sso_token(
             detail="Client is not authorized to mint an SSO token for this event",
         )
 
+    target_role = payload.role if payload and payload.role else "organizer"
+    target_email = payload.email if payload else None
+    target_display_name = payload.display_name if payload else None
+
     token = create_sso_token(
         scope_type="event",
         scope_id=event.id,
-        role="organizer",
+        role=target_role,
         expires_in_seconds=settings.sso_token_expire_seconds,
+        email=target_email,
+        display_name=target_display_name,
     )
     return schemas.SSOTokenResponse(
         token=token,
         token_type="bearer",
         scope_type="event",
         scope_id=event.id,
-        role="organizer",
+        role=target_role,
         expires_in_seconds=settings.sso_token_expire_seconds,
         url=f"/studio?event_id={event.id}&sso_token={token}",
     )
+
+
+@router.get(
+    "/{event_id}/api-keys",
+    response_model=list[schemas.ApiKeyRead],
+    status_code=status.HTTP_200_OK,
+)
+def list_event_api_keys(
+    event_id: int,
+    user: Annotated[CurrentUser, Depends(require_role("organizer"))],
+    db: Annotated[Session, Depends(get_db)],
+):
+    """List all active API keys scoped to this event."""
+    if user.is_sso:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="SSO sessions are not permitted to manage API keys",
+        )
+    check_event_access(event_id, user, db)
+    all_clients = (
+        db.query(models.Client).filter(models.Client.is_platform.is_(False)).all()
+    )
+    event_clients = [c for c in all_clients if event_id in (c.event_ids or [])]
+
+    results = []
+    for c in event_clients:
+        masked = f"client_{c.id}_{c.hashed_key[:8]}..."
+        results.append(
+            schemas.ApiKeyRead(
+                id=c.id,
+                name=c.name or f"API Key #{c.id}",
+                masked_key=masked,
+                event_ids=list(c.event_ids or []),
+                webhook_url=c.webhook_url,
+            )
+        )
+    return results
+
+
+@router.post(
+    "/{event_id}/api-keys",
+    response_model=schemas.ApiKeyCreatedResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_event_api_key(
+    event_id: int,
+    user: Annotated[CurrentUser, Depends(require_role("organizer"))],
+    db: Annotated[Session, Depends(get_db)],
+    payload: schemas.ApiKeyCreate | None = None,
+):
+    """Generate a new event-scoped API key and return the unhashed key once."""
+    if user.is_sso:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="SSO sessions are not permitted to manage API keys",
+        )
+    check_event_access(event_id, user, db)
+
+    raw_api_key = secrets.token_urlsafe(32)
+    hashed_key = hash_api_key(raw_api_key)
+    name = (
+        payload.name.strip()
+        if (payload and payload.name and payload.name.strip())
+        else f"Event #{event_id} API Key"
+    )
+    webhook_url = payload.webhook_url if payload else None
+
+    client = models.Client(
+        hashed_key=hashed_key,
+        event_ids=[event_id],
+        name=name,
+        webhook_url=webhook_url,
+    )
+    db.add(client)
+    db.commit()
+    db.refresh(client)
+
+    return schemas.ApiKeyCreatedResponse(
+        id=client.id,
+        name=client.name,
+        api_key=raw_api_key,
+        event_id=event_id,
+    )
+
+
+@router.delete(
+    "/{event_id}/api-keys/{client_id}",
+    status_code=status.HTTP_200_OK,
+)
+def revoke_event_api_key(
+    event_id: int,
+    client_id: int,
+    user: Annotated[CurrentUser, Depends(require_role("organizer"))],
+    db: Annotated[Session, Depends(get_db)],
+):
+    """Revoke an API key scoped to this event."""
+    if user.is_sso:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="SSO sessions are not permitted to manage API keys",
+        )
+    check_event_access(event_id, user, db)
+
+    client = db.query(models.Client).filter(models.Client.id == client_id).first()
+    if not client or client.is_platform or event_id not in (client.event_ids or []):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="API key not found for this event",
+        )
+
+    db.delete(client)
+    db.commit()
+    return {"status": "ok", "deleted_id": client_id}

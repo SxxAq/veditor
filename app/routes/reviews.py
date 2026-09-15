@@ -47,10 +47,10 @@ def review_talk(
     if user.source == "sso":
         check_talk_access(talk, user, db)
     else:
-        if user.role not in ("organizer", "admin") and not user.is_machine:
+        if user.role not in ("reviewer", "organizer", "admin") and not user.is_machine:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="Operation requires minimum role 'organizer'",
+                detail="Operation requires minimum role 'reviewer'",
             )
         check_event_access(talk.event_id, user, db)
 
