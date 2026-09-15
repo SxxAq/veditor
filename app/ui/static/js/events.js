@@ -79,15 +79,27 @@ document.addEventListener('DOMContentLoaded', () => {
 
   let currentActiveEventId = null;
 
+  function renderApiKeysStatus(text, isDanger = false) {
+    if (!apiKeysTbody) return;
+    apiKeysTbody.innerHTML = "";
+    const tr = document.createElement("tr");
+    const td = document.createElement("td");
+    td.colSpan = 6;
+    td.className = `${isDanger ? "text-danger" : "text-muted"} text-center api-keys-empty-msg`;
+    td.textContent = text;
+    tr.appendChild(td);
+    apiKeysTbody.appendChild(tr);
+  }
+
   async function loadApiKeys(eventId) {
     if (!apiKeysTbody) return;
-    apiKeysTbody.innerHTML = '<tr><td colspan="6" class="text-muted text-center api-keys-empty-msg">Loading API keys...</td></tr>';
+    renderApiKeysStatus("Loading API keys...");
     if (apiKeysEmpty) apiKeysEmpty.classList.add('api-key-alert-hidden');
 
     try {
       const resp = await fetch(`/events/${eventId}/api-keys`);
       if (!resp.ok) {
-        apiKeysTbody.innerHTML = `<tr><td colspan="6" class="text-danger text-center api-keys-empty-msg">Failed to load keys (${resp.status})</td></tr>`;
+        renderApiKeysStatus(`Failed to load keys (${resp.status})`, true);
         return;
       }
       const keys = await resp.json();
@@ -181,15 +193,11 @@ document.addEventListener('DOMContentLoaded', () => {
       });
 
     } catch (err) {
-      apiKeysTbody.innerHTML = `<tr><td colspan="6" class="text-danger text-center api-keys-empty-msg">Error loading keys: ${escapeHtml(err.message)}</td></tr>`;
+      renderApiKeysStatus(`Error loading keys: ${err.message}`, true);
     }
   }
 
-  function escapeHtml(str) {
-    const div = document.createElement('div');
-    div.textContent = str;
-    return div.innerHTML;
-  }
+
 
   document.querySelectorAll('.btn-api-keys').forEach(btn => {
     btn.addEventListener('click', () => {
