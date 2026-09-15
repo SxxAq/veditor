@@ -1414,10 +1414,18 @@ async def import_schedule(
                 .first()
             )
 
-    if not event and user.is_machine and user.event_ids:
-        event = (
-            db.query(models.Event).filter(models.Event.id == user.event_ids[0]).first()
-        )
+    if not event and user.is_machine:
+        if not getattr(user, "is_platform", False) and len(user.event_ids) == 1:
+            event = (
+                db.query(models.Event)
+                .filter(models.Event.id == user.event_ids[0])
+                .first()
+            )
+        elif len(user.event_ids) > 1:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Ambiguous event target: machine client has access to multiple events. Please provide an explicit event identifier.",
+            )
 
     if not event:
         created_by = user.user_id if not user.is_machine else None

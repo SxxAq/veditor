@@ -81,13 +81,13 @@ document.addEventListener('DOMContentLoaded', () => {
 
   async function loadApiKeys(eventId) {
     if (!apiKeysTbody) return;
-    apiKeysTbody.innerHTML = '<tr><td colspan="6" class="text-muted" class="text-danger text-center api-keys-empty-msg">Loading API keys...</td></tr>';
+    apiKeysTbody.innerHTML = '<tr><td colspan="6" class="text-muted text-center api-keys-empty-msg">Loading API keys...</td></tr>';
     if (apiKeysEmpty) apiKeysEmpty.classList.add('api-key-alert-hidden');
 
     try {
       const resp = await fetch(`/events/${eventId}/api-keys`);
       if (!resp.ok) {
-        apiKeysTbody.innerHTML = `<tr><td colspan="6" class="text-danger" class="text-danger text-center api-keys-empty-msg">Failed to load keys (${resp.status})</td></tr>`;
+        apiKeysTbody.innerHTML = `<tr><td colspan="6" class="text-danger text-center api-keys-empty-msg">Failed to load keys (${resp.status})</td></tr>`;
         return;
       }
       const keys = await resp.json();
@@ -112,16 +112,45 @@ document.addEventListener('DOMContentLoaded', () => {
         const createdStr = k.created_at ? new Date(k.created_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—';
         const lastUsedStr = k.last_used_at ? new Date(k.last_used_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : 'Never';
         const tr = document.createElement('tr');
-        tr.innerHTML = `
-          <td class="td-mono">#${k.id}</td>
-          <td>${escapeHtml(k.name || 'API Key')}</td>
-          <td><code class="input-mono">${escapeHtml(k.masked_key)}</code></td>
-          <td class="text-muted" style="font-size: 12px;">${createdStr}</td>
-          <td class="text-muted" style="font-size: 12px;">${lastUsedStr}</td>
-          <td class="col-actions-right">
-            <button type="button" class="btn btn-ghost btn-xs btn-danger-ghost btn-revoke-key" data-key-id="${k.id}">Revoke</button>
-          </td>
-        `;
+
+        const tdId = document.createElement('td');
+        tdId.className = 'td-mono';
+        tdId.textContent = `#${k.id}`;
+        tr.appendChild(tdId);
+
+        const tdName = document.createElement('td');
+        tdName.textContent = k.name || 'API Key';
+        tr.appendChild(tdName);
+
+        const tdKey = document.createElement('td');
+        const codeKey = document.createElement('code');
+        codeKey.className = 'input-mono';
+        codeKey.textContent = k.masked_key;
+        tdKey.appendChild(codeKey);
+        tr.appendChild(tdKey);
+
+        const tdCreated = document.createElement('td');
+        tdCreated.className = 'text-muted';
+        tdCreated.style.fontSize = '12px';
+        tdCreated.textContent = createdStr;
+        tr.appendChild(tdCreated);
+
+        const tdLastUsed = document.createElement('td');
+        tdLastUsed.className = 'text-muted';
+        tdLastUsed.style.fontSize = '12px';
+        tdLastUsed.textContent = lastUsedStr;
+        tr.appendChild(tdLastUsed);
+
+        const tdAction = document.createElement('td');
+        tdAction.className = 'col-actions-right';
+        const btnRevoke = document.createElement('button');
+        btnRevoke.type = 'button';
+        btnRevoke.className = 'btn btn-ghost btn-xs btn-danger-ghost btn-revoke-key';
+        btnRevoke.setAttribute('data-key-id', k.id);
+        btnRevoke.textContent = 'Revoke';
+        tdAction.appendChild(btnRevoke);
+        tr.appendChild(tdAction);
+
         apiKeysTbody.appendChild(tr);
       });
 
@@ -152,7 +181,7 @@ document.addEventListener('DOMContentLoaded', () => {
       });
 
     } catch (err) {
-      apiKeysTbody.innerHTML = `<tr><td colspan="6" class="text-danger" class="text-danger text-center api-keys-empty-msg">Error loading keys: ${escapeHtml(err.message)}</td></tr>`;
+      apiKeysTbody.innerHTML = `<tr><td colspan="6" class="text-danger text-center api-keys-empty-msg">Error loading keys: ${escapeHtml(err.message)}</td></tr>`;
     }
   }
 
