@@ -602,6 +602,8 @@ def test_list_event_api_keys(mock_db):
     assert len(keys) == 1
     assert keys[0]["id"] == 101
     assert keys[0]["name"] == "Web Sync Key"
+    assert "created_at" in keys[0]
+    assert "last_used_at" in keys[0]
 
 
 def test_create_event_api_key(mock_db):

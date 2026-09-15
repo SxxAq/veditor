@@ -878,20 +878,20 @@ def test_import_schedule_rejected_for_sso(mock_db):
     assert "SSO sessions are not permitted to import schedules" in resp.json()["detail"]
 
 
-def test_sso_token_reviewer_role_and_identity():
+def test_sso_token_organizer_role_and_identity():
     """Verify reviewer role and identity claims (email, display_name) in SSO token."""
     token = create_sso_token(
         scope_type="event",
         scope_id=42,
-        role="reviewer",
-        email="reviewer@example.org",
-        display_name="Lead Reviewer",
+        role="organizer",
+        email="organizer@example.org",
+        display_name="Lead Organizer",
     )
     payload = decode_sso_token(token)
     assert payload is not None
-    assert payload["role"] == "reviewer"
-    assert payload["email"] == "reviewer@example.org"
-    assert payload["display_name"] == "Lead Reviewer"
+    assert payload["role"] == "organizer"
+    assert payload["email"] == "organizer@example.org"
+    assert payload["display_name"] == "Lead Organizer"
     assert payload["scope_type"] == "event"
     assert payload["scope_id"] == 42
 
@@ -901,9 +901,9 @@ def test_get_current_user_populates_identity_from_sso(mock_db):
     token = create_sso_token(
         scope_type="event",
         scope_id=1,
-        role="reviewer",
-        email="reviewer@example.org",
-        display_name="Lead Reviewer",
+        role="organizer",
+        email="organizer@example.org",
+        display_name="Lead Organizer",
     )
     request = MagicMock()
     request.query_params.get.return_value = None
@@ -916,8 +916,8 @@ def test_get_current_user_populates_identity_from_sso(mock_db):
         db=mock_db,
         bearer_creds=bearer,
     )
-    assert user.role == "reviewer"
-    assert user.email == "reviewer@example.org"
-    assert user.display_name == "Lead Reviewer"
+    assert user.role == "organizer"
+    assert user.email == "organizer@example.org"
+    assert user.display_name == "Lead Organizer"
     assert user.is_sso is True
     assert user.event_ids == [1]

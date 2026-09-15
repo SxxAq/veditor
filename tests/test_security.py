@@ -371,9 +371,7 @@ def test_create_sso_token_invalid_inputs():
     with pytest.raises(ValueError, match="scope_id must be a positive integer"):
         create_sso_token(scope_type="event", scope_id=-5, role="organizer")
 
-    with pytest.raises(
-        ValueError, match="role must be 'organizer', 'reviewer', or 'speaker'"
-    ):
+    with pytest.raises(ValueError, match="role must be 'organizer' or 'speaker'"):
         create_sso_token(scope_type="event", scope_id=1, role="admin")
 
     with pytest.raises(

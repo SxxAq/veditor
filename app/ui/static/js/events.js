@@ -81,13 +81,13 @@ document.addEventListener('DOMContentLoaded', () => {
 
   async function loadApiKeys(eventId) {
     if (!apiKeysTbody) return;
-    apiKeysTbody.innerHTML = '<tr><td colspan="4" class="text-muted" class="text-danger text-center api-keys-empty-msg">Loading API keys...</td></tr>';
+    apiKeysTbody.innerHTML = '<tr><td colspan="6" class="text-muted" class="text-danger text-center api-keys-empty-msg">Loading API keys...</td></tr>';
     if (apiKeysEmpty) apiKeysEmpty.classList.add('api-key-alert-hidden');
 
     try {
       const resp = await fetch(`/events/${eventId}/api-keys`);
       if (!resp.ok) {
-        apiKeysTbody.innerHTML = `<tr><td colspan="4" class="text-danger" class="text-danger text-center api-keys-empty-msg">Failed to load keys (${resp.status})</td></tr>`;
+        apiKeysTbody.innerHTML = `<tr><td colspan="6" class="text-danger" class="text-danger text-center api-keys-empty-msg">Failed to load keys (${resp.status})</td></tr>`;
         return;
       }
       const keys = await resp.json();
@@ -139,7 +139,7 @@ document.addEventListener('DOMContentLoaded', () => {
       });
 
     } catch (err) {
-      apiKeysTbody.innerHTML = `<tr><td colspan="4" class="text-danger" class="text-danger text-center api-keys-empty-msg">Error loading keys: ${escapeHtml(err.message)}</td></tr>`;
+      apiKeysTbody.innerHTML = `<tr><td colspan="6" class="text-danger" class="text-danger text-center api-keys-empty-msg">Error loading keys: ${escapeHtml(err.message)}</td></tr>`;
     }
   }
 

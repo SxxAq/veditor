@@ -178,7 +178,7 @@ def create_event_sso_token(
     payload: schemas.EventSSOTokenRequest | None = None,
 ):
     """
-    Issues a short-lived, event-scoped SSO token carrying role=organizer or reviewer.
+    Issues a short-lived, event-scoped SSO token carrying role=organizer.
     Resolves event by integer ID or external slug (external_id=event_slug).
     Requires caller to be authenticated via X-API-Key only.
     """
@@ -263,6 +263,8 @@ def list_event_api_keys(
                 masked_key=masked,
                 event_ids=list(c.event_ids or []),
                 webhook_url=c.webhook_url,
+                created_at=getattr(c, "created_at", None),
+                last_used_at=getattr(c, "last_used_at", None),
             )
         )
     return results

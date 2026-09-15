@@ -450,10 +450,24 @@ def test_deactivated_user_immediate_session_and_login_rejection(
 def test_concurrent_admin_demotion_prevents_zero_admins():
     import threading
 
+    other_admin_ids = []
     with SessionLocal() as s:
         s.query(models.User).filter(
             models.User.email.like("%@concurrent-test.com")
         ).delete()
+        other_admins = (
+            s.query(models.User)
+            .filter(
+                models.User.role == "admin",
+                ~models.User.email.like("%@concurrent-test.com"),
+            )
+            .all()
+        )
+        other_admin_ids = [u.id for u in other_admins]
+        if other_admin_ids:
+            s.query(models.User).filter(models.User.id.in_(other_admin_ids)).update(
+                {"role": "organizer"}, synchronize_session=False
+            )
         s.commit()
         admin1 = models.User(
             email="admin1@concurrent-test.com",

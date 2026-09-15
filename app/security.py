@@ -228,8 +228,8 @@ def create_sso_token(
         raise ValueError("scope_type must be 'event' or 'talk'")
     if not isinstance(scope_id, int) or isinstance(scope_id, bool) or scope_id <= 0:
         raise ValueError("scope_id must be a positive integer")
-    if role not in ("organizer", "reviewer", "speaker"):
-        raise ValueError("role must be 'organizer', 'reviewer', or 'speaker'")
+    if role not in ("organizer", "speaker"):
+        raise ValueError("role must be 'organizer' or 'speaker'")
     if expires_in_seconds is not None and (
         not isinstance(expires_in_seconds, int)
         or isinstance(expires_in_seconds, bool)
@@ -282,7 +282,7 @@ def decode_sso_token(token: str) -> dict | None:
         scope_id = payload.get("scope_id")
         if not isinstance(scope_id, int) or isinstance(scope_id, bool) or scope_id <= 0:
             return None
-        if payload.get("role") not in ("organizer", "reviewer", "speaker"):
+        if payload.get("role") not in ("organizer", "speaker"):
             return None
         return payload
     except (jwt.PyJWTError, TypeError, ValueError, AttributeError) as _exc:

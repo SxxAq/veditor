@@ -345,7 +345,7 @@ class UserPromoteRequest(BaseModel):
 
 
 class EventSSOTokenRequest(BaseModel):
-    role: Literal["organizer", "reviewer"] = "organizer"
+    role: Literal["organizer"] = "organizer"
     email: str | None = None
     display_name: str | None = None
 
@@ -362,6 +362,8 @@ class ApiKeyRead(BaseModel):
     masked_key: str
     event_ids: list[int] = []
     webhook_url: str | None = None
+    created_at: datetime | None = None
+    last_used_at: datetime | None = None
     model_config = ConfigDict(from_attributes=True)
 
 
@@ -375,6 +377,7 @@ class ApiKeyCreatedResponse(BaseModel):
     name: str | None = None
     api_key: str
     event_id: int
+    created_at: datetime | None = None
 
 
 class SSOTokenResponse(BaseModel):

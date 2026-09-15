@@ -1,9 +1,11 @@
 import hashlib
+from datetime import UTC, datetime
 from typing import Annotated, Literal
 
 from fastapi import Cookie, Depends, HTTPException, Request, Security, status
 from fastapi.security import APIKeyHeader, HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app import models
@@ -14,9 +16,8 @@ api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 bearer_security = HTTPBearer(auto_error=False)
 
 ROLE_HIERARCHY: dict[str, int] = {
-    "speaker": 0,
     "user": 0,
-    "reviewer": 1,
+    "speaker": 1,
     "organizer": 2,
     "admin": 3,
 }
@@ -27,7 +28,7 @@ class CurrentUser(BaseModel):
     client_id: int | None = None
     email: str | None = None
     display_name: str | None = None
-    role: Literal["user", "organizer", "speaker", "reviewer", "admin"] = "user"
+    role: Literal["user", "organizer", "speaker", "admin"] = "user"
     source: Literal["api_key", "cookie", "jwt", "sso"]
     event_ids: list[int] = Field(default_factory=list)
     scope_type: Literal["event", "talk"] | None = None
@@ -98,6 +99,12 @@ def get_client(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid API Key",
         )
+
+    client.last_used_at = datetime.now(UTC)
+    try:
+        db.commit()
+    except SQLAlchemyError:
+        db.rollback()
 
     return client
 
