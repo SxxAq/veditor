@@ -147,7 +147,18 @@ def get_talk(
     if talk_id.isdigit():
         talk = db.query(models.Talk).filter(models.Talk.id == int(talk_id)).first()
     if not talk:
-        talk = db.query(models.Talk).filter(models.Talk.external_id == talk_id).first()
+        talk_filters = [models.Talk.external_id == talk_id]
+        if (
+            user.is_machine
+            and not user.is_platform
+            and user.event_ids
+            or not user.is_machine
+            and not user.is_platform
+            and not user.is_human_admin
+            and user.event_ids
+        ):
+            talk_filters.append(models.Talk.event_id.in_(user.event_ids))
+        talk = db.query(models.Talk).filter(*talk_filters).first()
     if not talk or (user.is_machine and not user.has_event_access(talk.event_id)):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Talk not found"
@@ -178,7 +189,18 @@ def get_talk_jobs(
     if talk_id.isdigit():
         talk = db.query(models.Talk).filter(models.Talk.id == int(talk_id)).first()
     if not talk:
-        talk = db.query(models.Talk).filter(models.Talk.external_id == talk_id).first()
+        talk_filters = [models.Talk.external_id == talk_id]
+        if (
+            user.is_machine
+            and not user.is_platform
+            and user.event_ids
+            or not user.is_machine
+            and not user.is_platform
+            and not user.is_human_admin
+            and user.event_ids
+        ):
+            talk_filters.append(models.Talk.event_id.in_(user.event_ids))
+        talk = db.query(models.Talk).filter(*talk_filters).first()
     if not talk or (user.is_machine and not user.has_event_access(talk.event_id)):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Talk not found"
@@ -1535,17 +1557,34 @@ def create_talk_sso_token(
     Resolves talk by integer ID or external_id.
     Requires caller to be authenticated via X-API-Key only.
     """
+    target_event_id = (
+        payload.event_id if payload and payload.event_id is not None else None
+    )
+
     talk = None
     if talk_identifier.isdigit():
         talk = (
             db.query(models.Talk).filter(models.Talk.id == int(talk_identifier)).first()
         )
     if not talk:
-        talk = (
-            db.query(models.Talk)
-            .filter(models.Talk.external_id == talk_identifier)
-            .first()
-        )
+        talk_filters = [models.Talk.external_id == talk_identifier]
+        if not getattr(client, "is_platform", False) and client.event_ids:
+            talk_filters.append(models.Talk.event_id.in_(client.event_ids))
+        elif target_event_id is not None:
+            resolved_eid = (
+                int(target_event_id) if str(target_event_id).isdigit() else None
+            )
+            if resolved_eid is None:
+                ev = (
+                    db.query(models.Event)
+                    .filter(models.Event.external_id == str(target_event_id))
+                    .first()
+                )
+                if ev:
+                    resolved_eid = ev.id
+            if resolved_eid is not None:
+                talk_filters.append(models.Talk.event_id == resolved_eid)
+        talk = db.query(models.Talk).filter(*talk_filters).first()
     if not talk:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

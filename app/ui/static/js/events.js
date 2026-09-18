@@ -178,7 +178,9 @@ document.addEventListener('DOMContentLoaded', () => {
           try {
             const delResp = await fetch(`/events/${eventId}/api-keys/${keyId}`, { method: 'DELETE' });
             if (delResp.ok) {
-              loadApiKeys(eventId);
+              if (newKeyAlert) newKeyAlert.classList.add('api-key-alert-hidden');
+              if (newKeyInput) newKeyInput.value = '';
+              await loadApiKeys(eventId);
             } else {
               alert('Failed to revoke key');
               b.disabled = false;
@@ -216,18 +218,21 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   });
 
+  function closeApiKeysModal() {
+    if (apiKeysModal) apiKeysModal.classList.remove('active');
+    if (newKeyAlert) newKeyAlert.classList.add('api-key-alert-hidden');
+    if (newKeyInput) newKeyInput.value = '';
+    currentActiveEventId = null;
+  }
+
   document.querySelectorAll('.btn-close-api-keys-modal').forEach(btn => {
-    btn.addEventListener('click', () => {
-      if (apiKeysModal) apiKeysModal.classList.remove('active');
-      currentActiveEventId = null;
-    });
+    btn.addEventListener('click', closeApiKeysModal);
   });
 
   if (apiKeysModal) {
     apiKeysModal.addEventListener('click', (e) => {
       if (e.target === apiKeysModal) {
-        apiKeysModal.classList.remove('active');
-        currentActiveEventId = null;
+        closeApiKeysModal();
       }
     });
   }
@@ -254,7 +259,7 @@ document.addEventListener('DOMContentLoaded', () => {
           const data = await resp.json();
           if (newKeyInput) newKeyInput.value = data.api_key;
           if (newKeyAlert) newKeyAlert.classList.remove('api-key-alert-hidden');
-          loadApiKeys(currentActiveEventId);
+          await loadApiKeys(currentActiveEventId);
         } else {
           alert('Failed to generate key');
         }

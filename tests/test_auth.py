@@ -773,7 +773,15 @@ def test_get_client_throttles_last_used_at_updates():
     )
     mock_db.query.return_value.filter.return_value.first.return_value = client_stale
 
-    with patch("app.auth.hash_api_key", return_value="stale_hash"):
+    with (
+        patch("app.auth.hash_api_key", return_value="stale_hash"),
+        patch("app.auth.SessionLocal") as mock_session_local,
+    ):
+        mock_isolated_session = MagicMock()
+        mock_session_local.return_value.__enter__.return_value = mock_isolated_session
         resolved2 = get_client(api_key="valid-key", db=mock_db)
         assert resolved2 == client_stale
-        assert mock_db.commit.called
+        # Request session is never prematurely committed
+        assert not mock_db.commit.called
+        # Isolated session is committed out-of-band
+        assert mock_isolated_session.commit.called

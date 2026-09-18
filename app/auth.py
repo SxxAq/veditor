@@ -1,4 +1,5 @@
 import hashlib
+import logging
 from datetime import UTC, datetime
 from typing import Annotated, Literal
 
@@ -9,11 +10,12 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app import models
-from app.db import get_db
+from app.db import SessionLocal, get_db
 from app.security import decode_access_token, decode_session_token, decode_sso_token
 
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 bearer_security = HTTPBearer(auto_error=False)
+logger = logging.getLogger(__name__)
 
 ROLE_HIERARCHY: dict[str, int] = {
     "user": 0,
@@ -115,10 +117,16 @@ def get_client(
 
     if should_update:
         client.last_used_at = now
+        # Update last_used_at out-of-band using an isolated session so we never
+        # prematurely commit the request session or risk detaching models on rollback.
         try:
-            db.commit()
-        except SQLAlchemyError:
-            db.rollback()
+            with SessionLocal() as separate_db:
+                separate_db.query(models.Client).filter(
+                    models.Client.id == client.id
+                ).update({"last_used_at": now}, synchronize_session=False)
+                separate_db.commit()
+        except SQLAlchemyError as exc:
+            logger.debug("Failed to update client last_used_at: %s", exc)
 
     return client
 

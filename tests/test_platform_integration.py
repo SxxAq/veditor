@@ -22,6 +22,7 @@ from app.auth import hash_api_key
 from app.cli import create_platform_client
 from app.db import SessionLocal, get_db
 from app.main import app
+from app.security import create_session_token
 
 client = TestClient(app)
 
@@ -458,3 +459,97 @@ def test_platform_client_lists_all_events(
     event_names = [e["name"] for e in response.json()]
     assert "Event 1" in event_names
     assert "Event 2" in event_names
+
+
+def test_talk_composite_external_id_scoping_per_event(db_session: Session):
+    """Ensure composite ('event_id', 'external_id') talk resolution does not cross-contaminate scoped clients."""
+    e1 = models.Event(name="Conference A", source="eventyay", external_id="conf-a")
+    e2 = models.Event(name="Conference B", source="eventyay", external_id="conf-b")
+    db_session.add_all([e1, e2])
+    db_session.commit()
+
+    now = datetime.now(UTC)
+    t1 = models.Talk(
+        title="Keynote A",
+        event_id=e1.id,
+        external_id="SHARED-TALK",
+        status="waiting_for_files",
+        start=now,
+        end=now + timedelta(hours=1),
+    )
+    t2 = models.Talk(
+        title="Keynote B",
+        event_id=e2.id,
+        external_id="SHARED-TALK",
+        status="waiting_for_files",
+        start=now,
+        end=now + timedelta(hours=1),
+    )
+    db_session.add_all([t1, t2])
+
+    raw_key_b = "test-scoped-key-b-12345"
+    c_b = models.Client(
+        name="Client B",
+        hashed_key=hash_api_key(raw_key_b),
+        is_platform=False,
+        event_ids=[e2.id],
+    )
+    db_session.add(c_b)
+    db_session.commit()
+
+    # Client B should resolve Talk 2 (not Talk 1) despite both sharing external_id "SHARED-TALK"
+    resp = client.post(
+        "/talks/SHARED-TALK/sso-token",
+        headers={"X-API-Key": raw_key_b},
+        json={
+            "role": "speaker",
+            "email": "speaker@test.com",
+            "display_name": "Speaker",
+        },
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["scope_id"] == t2.id
+    assert f"/studio/talks/{t2.id}" in data["url"]
+
+    # GET /talks/SHARED-TALK with Client B's API key resolves Talk 2
+    get_resp = client.get(
+        "/talks/SHARED-TALK",
+        headers={"X-API-Key": raw_key_b},
+    )
+    assert get_resp.status_code == 200
+    assert get_resp.json()["id"] == t2.id
+    assert get_resp.json()["title"] == "Keynote B"
+
+
+def test_create_event_api_key_returns_created_at(db_session: Session):
+    """Ensure ApiKeyCreatedResponse returns non-null created_at timestamp upon key generation."""
+    organizer = models.User(
+        email="org_apikey@test.com",
+        hashed_password="hash",
+        role="organizer",
+        is_active=True,
+    )
+    db_session.add(organizer)
+    db_session.commit()
+
+    event = models.Event(
+        name="API Key Event",
+        source="manual",
+        external_id="key-ev-1",
+        created_by_user_id=organizer.id,
+    )
+    db_session.add(event)
+    db_session.commit()
+
+    session_token = create_session_token(organizer.id, organizer.role)
+    resp = client.post(
+        f"/events/{event.id}/api-keys",
+        cookies={"veditor_session": session_token},
+        json={"name": "Integration Key"},
+    )
+    assert resp.status_code == 201
+    data = resp.json()
+    assert data["id"] is not None
+    assert data["api_key"] is not None
+    assert data["created_at"] is not None

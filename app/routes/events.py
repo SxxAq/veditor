@@ -188,11 +188,10 @@ def create_event_sso_token(
             .first()
         )
     if not event:
-        event = (
-            db.query(models.Event)
-            .filter(models.Event.external_id == event_identifier)
-            .first()
-        )
+        event_filters = [models.Event.external_id == event_identifier]
+        if not getattr(client, "is_platform", False) and client.event_ids:
+            event_filters.append(models.Event.id.in_(client.event_ids))
+        event = db.query(models.Event).filter(*event_filters).first()
     if not event:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -246,10 +245,15 @@ def list_event_api_keys(
             detail="SSO sessions are not permitted to manage API keys",
         )
     check_event_access(event_id, user, db)
-    all_clients = (
-        db.query(models.Client).filter(models.Client.is_platform.is_(False)).all()
+    event_clients = (
+        db.query(models.Client)
+        .filter(
+            models.Client.is_platform.is_(False),
+            models.Client.event_ids.any(event_id),
+        )
+        .all()
     )
-    event_clients = [c for c in all_clients if event_id in (c.event_ids or [])]
+    event_clients = [c for c in event_clients if event_id in (c.event_ids or [])]
 
     results = []
     for c in event_clients:
@@ -297,16 +301,20 @@ def create_event_api_key(
     webhook_url = payload.webhook_url if payload else None
 
     # Enforce at most 1 active API key per event by revoking previous key(s)
-    all_clients = (
-        db.query(models.Client).filter(models.Client.is_platform.is_(False)).all()
+    existing_clients = (
+        db.query(models.Client)
+        .filter(
+            models.Client.is_platform.is_(False),
+            models.Client.event_ids.any(event_id),
+        )
+        .all()
     )
-    for existing_c in all_clients:
-        if event_id in (existing_c.event_ids or []):
-            remaining = [eid for eid in (existing_c.event_ids or []) if eid != event_id]
-            if remaining:
-                existing_c.event_ids = remaining
-            else:
-                db.delete(existing_c)
+    for existing_c in existing_clients:
+        remaining = [eid for eid in (existing_c.event_ids or []) if eid != event_id]
+        if remaining:
+            existing_c.event_ids = remaining
+        else:
+            db.delete(existing_c)
     db.flush()
 
     client = models.Client(
@@ -324,6 +332,7 @@ def create_event_api_key(
         name=client.name,
         api_key=raw_api_key,
         event_id=event_id,
+        created_at=client.created_at,
     )
 
 

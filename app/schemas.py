@@ -368,6 +368,7 @@ class TalkSSOTokenRequest(BaseModel):
     role: Literal["speaker"] = "speaker"
     email: str | None = None
     display_name: str | None = None
+    event_id: int | str | None = None
 
 
 class ApiKeyRead(BaseModel):

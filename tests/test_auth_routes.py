@@ -482,7 +482,7 @@ def test_templating_unauthenticated_navbar(client: TestClient):
     assert "modal-api-key" not in res.text
 
 
-def test_post_signup_creates_organizer_role(client: TestClient, db_session):
+def test_post_signup_always_defaults_to_user_role(client: TestClient, db_session):
     res = client.post(
         "/signup",
         data={
@@ -502,4 +502,4 @@ def test_post_signup_creates_organizer_role(client: TestClient, db_session):
         .first()
     )
     assert user is not None
-    assert user.role == "organizer"
+    assert user.role == "user"
