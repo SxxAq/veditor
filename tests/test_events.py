@@ -684,3 +684,43 @@ def test_create_event_api_key_revokes_existing_keys(mock_db):
     assert res.status_code == 201
     assert mock_db.delete.called
     assert mock_db.delete.call_args[0][0] == existing_c
+
+
+def test_revoke_multi_event_api_key_retains_other_events(mock_db):
+    event = models.Event(id=1, name="Test Event", created_by_user_id=5)
+    c1 = models.Client(
+        id=101,
+        name="Shared Key",
+        hashed_key="hash1",
+        is_platform=False,
+        event_ids=[1, 2],
+    )
+    mock_db.query.return_value.filter.return_value.first.side_effect = [event, c1]
+    app.dependency_overrides[get_db] = lambda: mock_db
+    app.dependency_overrides[get_current_user] = lambda: CurrentUser(
+        user_id=5, role="organizer", source="jwt"
+    )
+
+    res = client.delete("/events/1/api-keys/101")
+    assert res.status_code == 200
+    assert res.json() == {"status": "ok", "deleted_id": 101}
+    assert not mock_db.delete.called
+    assert c1.event_ids == [2]
+
+
+def test_create_event_api_key_multi_event_retains_other_events(mock_db):
+    event = models.Event(id=1, name="Test Event", created_by_user_id=5)
+    existing_c = models.Client(
+        id=99, name="Shared Key", hashed_key="old_hash", event_ids=[1, 2]
+    )
+    mock_db.query.return_value.filter.return_value.first.return_value = event
+    mock_db.query.return_value.filter.return_value.all.return_value = [existing_c]
+    app.dependency_overrides[get_db] = lambda: mock_db
+    app.dependency_overrides[get_current_user] = lambda: CurrentUser(
+        user_id=5, role="organizer", source="jwt"
+    )
+
+    res = client.post("/events/1/api-keys", json={"name": "Rotated Key"})
+    assert res.status_code == 201
+    assert not mock_db.delete.called
+    assert existing_c.event_ids == [2]

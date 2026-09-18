@@ -302,7 +302,11 @@ def create_event_api_key(
     )
     for existing_c in all_clients:
         if event_id in (existing_c.event_ids or []):
-            db.delete(existing_c)
+            remaining = [eid for eid in (existing_c.event_ids or []) if eid != event_id]
+            if remaining:
+                existing_c.event_ids = remaining
+            else:
+                db.delete(existing_c)
     db.flush()
 
     client = models.Client(
@@ -348,6 +352,10 @@ def revoke_event_api_key(
             detail="API key not found for this event",
         )
 
-    db.delete(client)
+    remaining = [eid for eid in (client.event_ids or []) if eid != event_id]
+    if remaining:
+        client.event_ids = remaining
+    else:
+        db.delete(client)
     db.commit()
     return {"status": "ok", "deleted_id": client_id}

@@ -100,11 +100,25 @@ def get_client(
             detail="Invalid API Key",
         )
 
-    client.last_used_at = datetime.now(UTC)
-    try:
-        db.commit()
-    except SQLAlchemyError:
-        db.rollback()
+    now = datetime.now(UTC)
+    should_update = False
+    if client.last_used_at is None:
+        should_update = True
+    else:
+        last_used = (
+            client.last_used_at
+            if client.last_used_at.tzinfo is not None
+            else client.last_used_at.replace(tzinfo=UTC)
+        )
+        if (now - last_used).total_seconds() > 300:
+            should_update = True
+
+    if should_update:
+        client.last_used_at = now
+        try:
+            db.commit()
+        except SQLAlchemyError:
+            db.rollback()
 
     return client
 
