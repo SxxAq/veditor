@@ -49,6 +49,7 @@ class Settings(BaseSettings):
     ingest_roots: list[Path] = []
     preview_presets: dict[str, PreviewPreset] = PREVIEW_PRESETS
     disk_guard_multiplier: float = 3.0
+    retention_sweep_interval_seconds: int = 3600
 
     environment: str = "development"
     session_secret: str | None = None

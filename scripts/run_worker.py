@@ -16,7 +16,11 @@ from app.config import settings
 
 
 def _run_single_worker(
-    queues: list[str], redis_url: str, name: str | None, burst: bool
+    queues: list[str],
+    redis_url: str,
+    name: str | None,
+    burst: bool,
+    with_scheduler: bool = False,
 ) -> None:
     # Eagerly import task modules in the worker process so job code is loaded
     # once at worker boot rather than re-imported per job fork.
@@ -26,7 +30,10 @@ def _run_single_worker(
     engine.dispose(close=False)
     redis_conn = redis.from_url(redis_url)
     worker = Worker(queues, connection=redis_conn, name=name)
-    worker.work(burst=burst)
+    if with_scheduler:
+        worker.work(burst=burst, with_scheduler=True)
+    else:
+        worker.work(burst=burst)
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -56,6 +63,11 @@ def main(argv: list[str] | None = None) -> None:
         default=1,
         help="Number of worker processes to spawn (default: 1)",
     )
+    parser.add_argument(
+        "--with-scheduler",
+        action="store_true",
+        help="Run worker with scheduler enabled for periodic jobs",
+    )
 
     args = parser.parse_args(argv)
 
@@ -81,16 +93,23 @@ def main(argv: list[str] | None = None) -> None:
         processes = []
         for i in range(args.concurrency):
             worker_name = f"{args.name}-{i + 1}" if args.name else None
+            is_sched = args.with_scheduler and (i == 0)
             p = ctx.Process(
                 target=_run_single_worker,
-                args=(queues, settings.redis_url, worker_name, args.burst),
+                args=(queues, settings.redis_url, worker_name, args.burst, is_sched),
             )
             p.start()
             processes.append(p)
         for p in processes:
             p.join()
     else:
-        _run_single_worker(queues, settings.redis_url, args.name, args.burst)
+        _run_single_worker(
+            queues,
+            settings.redis_url,
+            args.name,
+            args.burst,
+            args.with_scheduler,
+        )
 
 
 if __name__ == "__main__":

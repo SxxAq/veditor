@@ -76,3 +76,159 @@ def get_retention(event: Any | None = None) -> RetentionPolicy:
         return RetentionPolicy()
 
     return RetentionPolicy(final_retention_days=final_days)
+
+
+RETENTION_SWEEP_JOB_ID: Final[str] = "retention_sweep"
+
+
+def run_retention_sweep(
+    db: Any | None = None,
+    storage: Any | None = None,
+) -> list[int]:
+    """Sweep and delete final/ storage for done talks past their retention window.
+
+    - Queries talks in 'done' whose updated_at + resolved final_retention_days has elapsed.
+    - Re-resolves RetentionPolicy per event on each run (no caching).
+    - Honors 'indefinite' retention overrides (skips deletion).
+    - Idempotent: missing final/ paths are treated as already clean without error.
+    - Excludes 'rejected' talks and intermediate/raw storage.
+    - Returns list of talk IDs whose final/ storage was deleted.
+    """
+    import logging
+    from datetime import UTC, datetime, timedelta
+
+    from sqlalchemy.orm import joinedload
+
+    from app.db import SessionLocal
+    from app.models import Talk
+    from app.storage import get_storage_backend
+
+    logger = logging.getLogger(__name__)
+
+    if db is None:
+        with SessionLocal() as session:
+            return run_retention_sweep(db=session, storage=storage)
+
+    if storage is None:
+        storage = get_storage_backend()
+
+    now = datetime.now(UTC)
+    swept_talk_ids: list[int] = []
+
+    talks = (
+        db.query(Talk)
+        .options(joinedload(Talk.event))
+        .filter(Talk.status == "done")
+        .all()
+    )
+
+    for talk in talks:
+        if talk.updated_at is None:
+            continue
+
+        updated_at = (
+            talk.updated_at
+            if talk.updated_at.tzinfo is not None
+            else talk.updated_at.replace(tzinfo=UTC)
+        )
+
+        event_obj = getattr(talk, "event", None)
+        policy = get_retention(event_obj if event_obj is not None else talk)
+        if policy.is_final_indefinite:
+            continue
+
+        retention_delta = timedelta(days=policy.final_retention_days)
+        if now < updated_at + retention_delta:
+            continue
+
+        final_prefix = f"{talk.id}/final"
+        existing_keys = (
+            storage.list_keys(final_prefix) if hasattr(storage, "list_keys") else []
+        )
+        if not existing_keys:
+            continue
+
+        try:
+            storage.delete(final_prefix)
+            swept_talk_ids.append(talk.id)
+            logger.info(
+                "Deleted final storage for talk %s (%s keys removed)",
+                talk.id,
+                len(existing_keys),
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "Failed to delete final storage for talk %s: %s",
+                talk.id,
+                exc,
+            )
+
+    return swept_talk_ids
+
+
+def enqueue_retention_sweep(queue: Any | None = None) -> Any:
+    """Enqueue run_retention_sweep to the RQ light queue."""
+    from app.queue import light_queue
+
+    target_queue = queue or light_queue
+    return target_queue.enqueue(
+        run_retention_sweep,
+        job_timeout=600,
+        description="Retention sweep for expired final artifacts",
+    )
+
+
+def register_periodic_retention_sweep(
+    queue: Any | None = None,
+    interval_seconds: int | None = None,
+) -> Any:
+    """Register a scheduled periodic retention sweep job on the RQ queue."""
+    import logging
+    import sys
+    from datetime import timedelta
+
+    from rq.job import Job
+    from rq.repeat import Repeat
+
+    from app.config import settings
+    from app.queue import light_queue
+
+    logger = logging.getLogger(__name__)
+    target_queue = queue or light_queue
+    interval = (
+        interval_seconds
+        if interval_seconds is not None
+        else settings.retention_sweep_interval_seconds
+    )
+
+    try:
+        existing_job = Job.fetch(
+            RETENTION_SWEEP_JOB_ID, connection=target_queue.connection
+        )
+        if existing_job and existing_job.get_status() in (
+            "queued",
+            "scheduled",
+            "started",
+        ):
+            logger.info(
+                "Periodic retention sweep job already registered (%s)",
+                existing_job.id,
+            )
+            return existing_job
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "Periodic retention sweep job not found or connection failed: %s", exc
+        )
+
+    repeat = Repeat(
+        times=sys.maxsize if hasattr(sys, "maxsize") else 1_000_000,
+        interval=interval,
+    )
+    return target_queue.enqueue_in(
+        timedelta(seconds=interval),
+        run_retention_sweep,
+        job_id=RETENTION_SWEEP_JOB_ID,
+        job_timeout=600,
+        repeat=repeat,
+        description="Periodic retention sweep for expired final artifacts",
+    )

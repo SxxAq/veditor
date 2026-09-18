@@ -35,6 +35,11 @@ from app.pipeline.publish import publish
 from app.pipeline.transcode import transcode
 from app.pipeline.waveform import extract_waveform_peaks
 from app.queue import heavy_queue, light_queue
+from app.retention import (
+    enqueue_retention_sweep,  # noqa: F401
+    register_periodic_retention_sweep,  # noqa: F401
+    run_retention_sweep,  # noqa: F401
+)
 from app.states import advance
 from app.storage import cleanup_intermediates, get_storage_backend
 

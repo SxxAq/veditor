@@ -1,16 +1,46 @@
+from datetime import UTC, datetime, timedelta
+from unittest.mock import MagicMock
+
 import pytest
 from pydantic import ValidationError
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
 
+from app.config import settings
+from app.db import Base
 from app.models import Event, Talk
 from app.retention import (
     DEFAULT_FINAL_RETENTION_DAYS,
     INDEFINITE,
     RetentionPolicy,
+    enqueue_retention_sweep,
     get_retention,
+    register_periodic_retention_sweep,
+    run_retention_sweep,
     validate_final_retention_days,
     validate_retention_overrides,
 )
 from app.schemas import EventCreate, EventRead
+
+engine = create_engine(settings.database_url)
+TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+
+@pytest.fixture(scope="module")
+def setup_database():
+    Base.metadata.create_all(bind=engine)
+    yield
+
+
+@pytest.fixture
+def db_session(setup_database):
+    connection = engine.connect()
+    transaction = connection.begin()
+    session = TestingSessionLocal(bind=connection)
+    yield session
+    session.close()
+    transaction.rollback()
+    connection.close()
 
 
 def test_default_retention_policy():
@@ -246,3 +276,259 @@ def test_get_retention_from_talk_model():
     policy = get_retention(talk)
     assert policy.final_retention_days == 30
     assert policy.is_final_indefinite is False
+
+
+def test_sweep_removes_final_past_default_window(db_session, fake_storage):
+    event = Event(name="Default Retention Event")
+    db_session.add(event)
+    db_session.flush()
+
+    past_date = datetime.now(UTC) - timedelta(days=15)
+    talk = Talk(
+        event_id=event.id,
+        title="Old Done Talk",
+        start=past_date,
+        end=past_date,
+        status="done",
+        updated_at=past_date,
+    )
+    db_session.add(talk)
+    db_session.flush()
+
+    final_key = f"{talk.id}/final/final.mp4"
+    raw_key = f"{talk.id}/raw/raw.mp4"
+    fake_storage.put(final_key, b"final media data")
+    fake_storage.put(raw_key, b"raw media data")
+
+    swept = run_retention_sweep(db=db_session, storage=fake_storage)
+
+    assert talk.id in swept
+    assert not fake_storage.exists(final_key)
+    assert fake_storage.exists(raw_key)
+
+
+def test_sweep_preserves_final_within_window(db_session, fake_storage):
+    event = Event(name="Default Retention Event")
+    db_session.add(event)
+    db_session.flush()
+
+    recent_date = datetime.now(UTC) - timedelta(days=10)
+    talk = Talk(
+        event_id=event.id,
+        title="Recent Done Talk",
+        start=recent_date,
+        end=recent_date,
+        status="done",
+        updated_at=recent_date,
+    )
+    db_session.add(talk)
+    db_session.flush()
+
+    final_key = f"{talk.id}/final/final.mp4"
+    fake_storage.put(final_key, b"final media data")
+
+    swept = run_retention_sweep(db=db_session, storage=fake_storage)
+
+    assert talk.id not in swept
+    assert fake_storage.exists(final_key)
+
+
+def test_sweep_honors_custom_override(db_session, fake_storage):
+    # Event with 30-day retention
+    event_30 = Event(
+        name="30 Day Event",
+        retention_overrides={"final_retention_days": 30},
+    )
+    db_session.add(event_30)
+    db_session.flush()
+
+    date_20_days_ago = datetime.now(UTC) - timedelta(days=20)
+    talk_30 = Talk(
+        event_id=event_30.id,
+        title="Talk 20 Days Old",
+        start=date_20_days_ago,
+        end=date_20_days_ago,
+        status="done",
+        updated_at=date_20_days_ago,
+    )
+    db_session.add(talk_30)
+
+    # Event with 7-day retention
+    event_7 = Event(
+        name="7 Day Event",
+        retention_overrides={"final_retention_days": 7},
+    )
+    db_session.add(event_7)
+    db_session.flush()
+
+    date_8_days_ago = datetime.now(UTC) - timedelta(days=8)
+    talk_7 = Talk(
+        event_id=event_7.id,
+        title="Talk 8 Days Old",
+        start=date_8_days_ago,
+        end=date_8_days_ago,
+        status="done",
+        updated_at=date_8_days_ago,
+    )
+    db_session.add(talk_7)
+    db_session.flush()
+
+    key_30 = f"{talk_30.id}/final/final.mp4"
+    key_7 = f"{talk_7.id}/final/final.mp4"
+    fake_storage.put(key_30, b"data 30")
+    fake_storage.put(key_7, b"data 7")
+
+    swept = run_retention_sweep(db=db_session, storage=fake_storage)
+
+    assert talk_30.id not in swept
+    assert talk_7.id in swept
+    assert fake_storage.exists(key_30)
+    assert not fake_storage.exists(key_7)
+
+
+def test_sweep_honors_indefinite_override(db_session, fake_storage):
+    event = Event(
+        name="Indefinite Event",
+        retention_overrides={"final_retention_days": INDEFINITE},
+    )
+    db_session.add(event)
+    db_session.flush()
+
+    ancient_date = datetime.now(UTC) - timedelta(days=365)
+    talk = Talk(
+        event_id=event.id,
+        title="Ancient Talk",
+        start=ancient_date,
+        end=ancient_date,
+        status="done",
+        updated_at=ancient_date,
+    )
+    db_session.add(talk)
+    db_session.flush()
+
+    final_key = f"{talk.id}/final/final.mp4"
+    fake_storage.put(final_key, b"preserved indefinitely")
+
+    swept = run_retention_sweep(db=db_session, storage=fake_storage)
+
+    assert talk.id not in swept
+    assert fake_storage.exists(final_key)
+
+
+def test_sweep_never_touches_rejected_talks(db_session, fake_storage):
+    event = Event(name="Default Event")
+    db_session.add(event)
+    db_session.flush()
+
+    old_date = datetime.now(UTC) - timedelta(days=30)
+    talk = Talk(
+        event_id=event.id,
+        title="Rejected Talk",
+        start=old_date,
+        end=old_date,
+        status="rejected",
+        updated_at=old_date,
+    )
+    db_session.add(talk)
+    db_session.flush()
+
+    final_key = f"{talk.id}/final/final.mp4"
+    fake_storage.put(final_key, b"should never be touched")
+
+    swept = run_retention_sweep(db=db_session, storage=fake_storage)
+
+    assert talk.id not in swept
+    assert fake_storage.exists(final_key)
+
+
+def test_sweep_idempotency_on_already_cleaned_paths(db_session, fake_storage):
+    event = Event(name="Idempotent Event")
+    db_session.add(event)
+    db_session.flush()
+
+    past_date = datetime.now(UTC) - timedelta(days=20)
+    talk = Talk(
+        event_id=event.id,
+        title="Idempotency Talk",
+        start=past_date,
+        end=past_date,
+        status="done",
+        updated_at=past_date,
+    )
+    db_session.add(talk)
+    db_session.flush()
+
+    final_key = f"{talk.id}/final/final.mp4"
+    fake_storage.put(final_key, b"data")
+
+    # Run 1: sweeps talk
+    swept1 = run_retention_sweep(db=db_session, storage=fake_storage)
+    assert talk.id in swept1
+    assert not fake_storage.exists(final_key)
+
+    # Run 2: safe, produces no errors and does not re-sweep
+    swept2 = run_retention_sweep(db=db_session, storage=fake_storage)
+    assert swept2 == []
+
+
+def test_sweep_dynamic_override_takes_effect_without_redeploy(db_session, fake_storage):
+    event = Event(
+        name="Dynamic Override Event",
+        retention_overrides={"final_retention_days": 30},
+    )
+    db_session.add(event)
+    db_session.flush()
+
+    date_15_days_ago = datetime.now(UTC) - timedelta(days=15)
+    talk = Talk(
+        event_id=event.id,
+        title="Dynamic Talk",
+        start=date_15_days_ago,
+        end=date_15_days_ago,
+        status="done",
+        updated_at=date_15_days_ago,
+    )
+    db_session.add(talk)
+    db_session.flush()
+
+    final_key = f"{talk.id}/final/final.mp4"
+    fake_storage.put(final_key, b"data")
+
+    # Run 1: 15 days elapsed < 30 days override -> untouched
+    swept1 = run_retention_sweep(db=db_session, storage=fake_storage)
+    assert talk.id not in swept1
+    assert fake_storage.exists(final_key)
+
+    # Organizer dynamically changes override to 10 days
+    event.retention_overrides = {"final_retention_days": 10}
+    db_session.flush()
+
+    # Run 2: 15 days elapsed >= 10 days override -> swept immediately without restart
+    swept2 = run_retention_sweep(db=db_session, storage=fake_storage)
+    assert talk.id in swept2
+    assert not fake_storage.exists(final_key)
+
+
+def test_enqueue_retention_sweep():
+    mock_queue = MagicMock()
+    enqueue_retention_sweep(queue=mock_queue)
+    mock_queue.enqueue.assert_called_once_with(
+        run_retention_sweep,
+        job_timeout=600,
+        description="Retention sweep for expired final artifacts",
+    )
+
+
+def test_register_periodic_retention_sweep():
+    mock_queue = MagicMock()
+    mock_queue.connection = MagicMock()
+
+    job = register_periodic_retention_sweep(queue=mock_queue, interval_seconds=1800)
+    assert job is not None
+    assert mock_queue.enqueue_in.called
+    args, kwargs = mock_queue.enqueue_in.call_args
+    assert args[0] == timedelta(seconds=1800)
+    assert args[1] == run_retention_sweep
+    assert kwargs["job_id"] == "retention_sweep"
+    assert kwargs["job_timeout"] == 600
+    assert kwargs["repeat"].intervals == [1800]

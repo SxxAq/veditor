@@ -17,6 +17,15 @@ def test_advance_legal_transitions():
             assert talk.status == next_state
 
 
+def test_advance_updates_talk_updated_at():
+    talk = DummyTalk("uploading")
+    assert not hasattr(talk, "updated_at")
+    advance(talk, "done")
+    assert hasattr(talk, "updated_at")
+    assert talk.updated_at is not None
+    assert talk.updated_at.tzinfo is not None
+
+
 def test_advance_illegal_transitions():
     # Test at least one illegal transition per state
     illegal_moves = {

@@ -154,6 +154,12 @@ class Talk(Base):
     outro_source: Mapped[str | None] = mapped_column(String(50), nullable=True)
     custom_intro_path: Mapped[str | None] = mapped_column(Text, nullable=True)
     custom_outro_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        default=lambda: datetime.now(UTC),
+        nullable=False,
+    )
 
     event: Mapped[Event] = relationship(back_populates="talks")
     jobs: Mapped[list[Job]] = relationship(
