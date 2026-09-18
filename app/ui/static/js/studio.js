@@ -51,7 +51,8 @@ if (shellInit) {
     }
   }
 }
-
+const savedCutStart = shellInit?.dataset.cutStart;
+const savedCutEnd = shellInit?.dataset.cutEnd;
 const video           = document.getElementById('main-video');
 const noPreview       = document.getElementById('no-preview-msg');
 const timecode        = document.getElementById('timecode-display');
@@ -87,6 +88,7 @@ const btnPlayCut      = document.getElementById('btn-play-cut');
 
 let inPointSec  = 0;
 let outPointSec = 0;
+let boundsEdited = false;
 let isPlayingCut = false;
 let currentWaveformPeaks = [];
 let waveformAbortController = null;
@@ -235,6 +237,7 @@ function initWaveformListeners() {
 window.loadVideoSrc = function(url) {
   if (!video) return;
   video.pause();
+  boundsEdited = false;
   video.src = url;
   video.style.display = 'block';
   if (noPreview) noPreview.style.display = 'none';
@@ -341,12 +344,14 @@ function setInPoint(timeSec) {
   const max = (video && Number.isFinite(video.duration) && video.duration > 0) ? video.duration : Infinity;
   inPointSec = Math.min(max, Math.max(0, timeSec));
   if (inPointSec > outPointSec) outPointSec = Math.min(max, inPointSec + 1);
+  boundsEdited = true;
   updateCutMarkersUI();
 }
 
 function setOutPoint(timeSec) {
   const max = (video && Number.isFinite(video.duration) && video.duration > 0) ? video.duration : Infinity;
   outPointSec = Math.min(max, Math.max(inPointSec + 0.1, timeSec));
+  boundsEdited = true;
   updateCutMarkersUI();
 }
 
@@ -500,9 +505,13 @@ if (video) {
     if (iconPause) iconPause.style.display = 'none';
     isPlayingCut = false;
   });
-  video.addEventListener('loadedmetadata', () => {
-    outPointSec = video.duration || 10;
-    inPointSec = 0;
+
+  function initializeVideoMetadata() {
+    const duration = video.duration || 10;
+    if (!boundsEdited) {
+      inPointSec = savedCutStart !== '' ? Number(savedCutStart) : 0;
+      outPointSec = savedCutEnd !== '' ? Number(savedCutEnd) : duration;
+    }
     updateTimecode();
     updateTimelineTicks();
     updateCutMarkersUI();
@@ -510,7 +519,13 @@ if (video) {
     const lbl = document.getElementById('tl-range-label');
     if (lbl) lbl.textContent = formatTimecode(video.duration);
     drawWaveform();
-  });
+  }
+
+  video.addEventListener('loadedmetadata', initializeVideoMetadata);
+
+  if (video.readyState >= 1) {
+    initializeVideoMetadata();
+  }
   video.addEventListener('durationchange', updateTimelineTicks);
 }
 
