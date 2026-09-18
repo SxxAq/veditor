@@ -1,5 +1,5 @@
 from datetime import UTC, datetime, timedelta
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 from pydantic import ValidationError
@@ -597,3 +597,65 @@ def test_sweep_handles_list_keys_failure_gracefully(db_session):
     assert talk1.id not in swept
     assert talk2.id in swept
     mock_storage.delete.assert_called_once_with(f"{talk2.id}/final")
+    assert talk1.final_cleaned_at is None
+    assert talk2.final_cleaned_at is not None
+
+
+def test_sweep_sets_final_cleaned_at_and_skips_subsequent(db_session, fake_storage):
+    event = Event(name="Cleaned Tracking Event")
+    db_session.add(event)
+    db_session.flush()
+
+    past_date = datetime.now(UTC) - timedelta(days=20)
+    talk = Talk(
+        event_id=event.id,
+        title="Tracking Talk",
+        start=past_date,
+        end=past_date,
+        status="done",
+        updated_at=past_date,
+    )
+    db_session.add(talk)
+    db_session.flush()
+
+    fake_storage.put(f"{talk.id}/final/test.mp4", b"data")
+    assert talk.final_cleaned_at is None
+
+    swept = run_retention_sweep(db=db_session, storage=fake_storage)
+    assert talk.id in swept
+    assert talk.final_cleaned_at is not None
+
+    # Subsequent sweep does not re-process the talk
+    swept2 = run_retention_sweep(db=db_session, storage=fake_storage)
+    assert swept2 == []
+
+
+@patch("rq.job.Job.fetch")
+def test_register_periodic_retention_sweep_deletes_stale_job(mock_fetch):
+    mock_stale_job = MagicMock()
+    mock_stale_job.get_status.return_value = "finished"
+    mock_fetch.return_value = mock_stale_job
+
+    mock_queue = MagicMock()
+    mock_queue.connection = MagicMock()
+
+    register_periodic_retention_sweep(queue=mock_queue, interval_seconds=1800)
+    mock_stale_job.delete.assert_called_once()
+    assert mock_queue.enqueue_in.called
+
+
+def test_register_periodic_retention_sweep_times_parameter():
+    mock_queue = MagicMock()
+    mock_queue.connection = MagicMock()
+
+    job = register_periodic_retention_sweep(
+        queue=mock_queue, interval_seconds=600, times=5
+    )
+    assert job is not None
+    _, kwargs = mock_queue.enqueue_in.call_args
+    assert kwargs["repeat"].times == 5
+
+    with pytest.raises(ValueError, match="times must be positive"):
+        register_periodic_retention_sweep(
+            queue=mock_queue, interval_seconds=600, times=0
+        )

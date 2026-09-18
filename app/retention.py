@@ -118,7 +118,7 @@ def run_retention_sweep(
     talks = (
         db.query(Talk)
         .options(joinedload(Talk.event))
-        .filter(Talk.status == "done")
+        .filter(Talk.status == "done", Talk.final_cleaned_at.is_(None))
         .all()
     )
 
@@ -142,27 +142,33 @@ def run_retention_sweep(
             continue
 
         final_prefix = f"{talk.id}/final"
+        talk_id = talk.id
         try:
             existing_keys = (
                 storage.list_keys(final_prefix) if hasattr(storage, "list_keys") else []
             )
             if not existing_keys:
+                talk.final_cleaned_at = now
+                db.flush()
                 continue
 
             storage.delete(final_prefix)
-            swept_talk_ids.append(talk.id)
+            talk.final_cleaned_at = now
+            swept_talk_ids.append(talk_id)
+            db.flush()
             logger.info(
                 "Deleted final storage for talk %s (%s keys removed)",
-                talk.id,
+                talk_id,
                 len(existing_keys),
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "Failed to process final storage for talk %s: %s",
-                talk.id,
+                talk_id,
                 exc,
             )
 
+    db.commit()
     return swept_talk_ids
 
 
@@ -181,10 +187,10 @@ def enqueue_retention_sweep(queue: Any | None = None) -> Any:
 def register_periodic_retention_sweep(
     queue: Any | None = None,
     interval_seconds: int | None = None,
+    times: int | None = None,
 ) -> Any:
     """Register a scheduled periodic retention sweep job on the RQ queue."""
     import logging
-    import sys
     from datetime import timedelta
 
     from rq.job import Job
@@ -217,20 +223,39 @@ def register_periodic_retention_sweep(
                 existing_job.id,
             )
             return existing_job
+        elif existing_job:
+            # Delete stale/finished/failed job so enqueue_in does not raise JobAlreadyExistsError
+            existing_job.delete()
     except Exception as exc:  # noqa: BLE001
         logger.debug(
             "Periodic retention sweep job not found or connection failed: %s", exc
         )
 
+    repeat_times = times if times is not None else 1_000_000
+    if repeat_times <= 0:
+        raise ValueError("times must be positive")
+
     repeat = Repeat(
-        times=sys.maxsize if hasattr(sys, "maxsize") else 1_000_000,
+        times=repeat_times,
         interval=interval,
     )
-    return target_queue.enqueue_in(
-        timedelta(seconds=interval),
-        run_retention_sweep,
-        job_id=RETENTION_SWEEP_JOB_ID,
-        job_timeout=600,
-        repeat=repeat,
-        description="Periodic retention sweep for expired final artifacts",
-    )
+    try:
+        return target_queue.enqueue_in(
+            timedelta(seconds=interval),
+            run_retention_sweep,
+            job_id=RETENTION_SWEEP_JOB_ID,
+            job_timeout=600,
+            repeat=repeat,
+            description="Periodic retention sweep for expired final artifacts",
+        )
+    except Exception as exc:
+        if "already exists" in str(exc).lower():
+            try:
+                return Job.fetch(
+                    RETENTION_SWEEP_JOB_ID, connection=target_queue.connection
+                )
+            except Exception as fetch_exc:  # noqa: BLE001
+                logger.debug(
+                    "Failed to fetch existing job after collision: %s", fetch_exc
+                )
+        raise

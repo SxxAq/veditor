@@ -160,6 +160,10 @@ class Talk(Base):
         default=lambda: datetime.now(UTC),
         nullable=False,
     )
+    final_cleaned_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
 
     event: Mapped[Event] = relationship(back_populates="talks")
     jobs: Mapped[list[Job]] = relationship(

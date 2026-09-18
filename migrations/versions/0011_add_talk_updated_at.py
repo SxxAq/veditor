@@ -29,8 +29,17 @@ def upgrade() -> None:
             nullable=False,
         ),
     )
+    op.add_column(
+        "talks",
+        sa.Column(
+            "final_cleaned_at",
+            sa.DateTime(timezone=True),
+            nullable=True,
+        ),
+    )
 
 
 def downgrade() -> None:
     """Downgrade schema."""
+    op.drop_column("talks", "final_cleaned_at")
     op.drop_column("talks", "updated_at")

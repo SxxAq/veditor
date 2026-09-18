@@ -103,7 +103,7 @@ def test_worker_burst_and_name_flags(mock_worker_cls, mock_redis_from_url):
     mock_worker.work.assert_called_once_with(burst=True)
 
 
-@patch("app.retention.register_periodic_retention_sweep")
+@patch("scripts.run_worker.register_periodic_retention_sweep")
 @patch("scripts.run_worker.redis.from_url")
 @patch("scripts.run_worker.Worker")
 def test_worker_with_scheduler_flag(
