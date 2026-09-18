@@ -543,6 +543,20 @@ def test_register_periodic_retention_sweep_rejects_non_positive_interval():
         register_periodic_retention_sweep(queue=mock_queue, interval_seconds=-10)
 
 
+def test_settings_retention_sweep_interval_validation():
+    from app.config import Settings
+
+    with pytest.raises(
+        ValueError, match="retention_sweep_interval_seconds must be positive"
+    ):
+        Settings(retention_sweep_interval_seconds=0)
+
+    with pytest.raises(
+        ValueError, match="retention_sweep_interval_seconds must be positive"
+    ):
+        Settings(retention_sweep_interval_seconds=-1)
+
+
 def test_sweep_handles_list_keys_failure_gracefully(db_session):
     event = Event(name="Resilience Event")
     db_session.add(event)
