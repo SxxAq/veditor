@@ -82,8 +82,6 @@ def list_events(
         if getattr(user, "is_platform", False):
             return db.query(models.Event).all()
         return db.query(models.Event).filter(models.Event.id.in_(user.event_ids)).all()
-    if user.role == "admin":
-        return db.query(models.Event).all()
     return (
         db.query(models.Event)
         .filter(models.Event.created_by_user_id == user.user_id)

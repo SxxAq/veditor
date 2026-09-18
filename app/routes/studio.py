@@ -1,4 +1,5 @@
 import logging
+import urllib.parse
 from pathlib import Path
 from typing import Annotated
 
@@ -84,9 +85,11 @@ def _authorize_studio_talk(
        - access if talk.event_id in client.event_ids
     Raises 401 if unauthenticated, 404 if talk does not exist or caller is unauthorized.
     """
-    cookie_token = request.cookies.get("veditor_session")
-    if cookie_token:
-        sso_payload = decode_sso_token(cookie_token)
+    raw_sso = request.query_params.get("sso_token") or request.cookies.get(
+        "veditor_session"
+    )
+    if raw_sso:
+        sso_payload = decode_sso_token(raw_sso)
         if sso_payload:
             talk = db.query(models.Talk).filter(models.Talk.id == talk_id).first()
             if not talk:
@@ -111,7 +114,12 @@ def _authorize_studio_talk(
 
     user = _get_authenticated_user_from_cookie(request, db)
     if user:
-        talk = db.query(models.Talk).filter(models.Talk.id == talk_id).first()
+        talk = (
+            db.query(models.Talk)
+            .options(selectinload(models.Talk.event))
+            .filter(models.Talk.id == talk_id)
+            .first()
+        )
         if not talk:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -119,8 +127,7 @@ def _authorize_studio_talk(
             )
         if user.role == "admin":
             return talk
-        event = db.query(models.Event).filter(models.Event.id == talk.event_id).first()
-        if event and event.created_by_user_id == user.id:
+        if talk.event and talk.event.created_by_user_id == user.id:
             return talk
         api_key = request.headers.get("X-API-Key") or request.cookies.get(
             "veditor_api_key"
@@ -154,7 +161,12 @@ def _authorize_studio_talk(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid API Key",
         )
-    talk = db.query(models.Talk).filter(models.Talk.id == talk_id).first()
+    talk = (
+        db.query(models.Talk)
+        .options(selectinload(models.Talk.event))
+        .filter(models.Talk.id == talk_id)
+        .first()
+    )
     if not talk or talk.event_id not in client.event_ids:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -189,12 +201,12 @@ MILESTONES_DEF = [
     },
     {
         "num": 2,
-        "title": "Timestamp Review (Gate 1)",
+        "title": "Timestamp Review",
         "desc": "Human verification of speaker In/Out points",
     },
     {
         "num": 3,
-        "title": "Processing & Preview (Gate 2)",
+        "title": "Processing & Preview",
         "desc": "Cut, loudness, title slates & low-res preview",
     },
     {
@@ -303,11 +315,26 @@ def dashboard(
             )
             resolved_event_id = ev.id if ev else -1
 
-    # 2. Check for active SSO session in cookie
+    # 2. Check for authenticated user or active SSO session in cookie
+    user = _get_authenticated_user_from_cookie(request, db)
     cookie_token = request.cookies.get("veditor_session")
-    sso_user = decode_sso_token(cookie_token) if cookie_token else None
+    sso_user = decode_sso_token(cookie_token) if (not user and cookie_token) else None
 
-    user = None
+    if request.headers.get("X-API-Key") and client is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid API Key. Please verify your credentials.",
+        )
+
+    if not user and not sso_user and client is None:
+        resp = RedirectResponse(
+            url="/login?next=/studio",
+            status_code=status.HTTP_302_FOUND,
+        )
+        if request.cookies.get("veditor_api_key"):
+            resp.delete_cookie("veditor_api_key")
+        return resp
+
     if sso_user:
         if sso_user["scope_type"] == "talk":
             return RedirectResponse(
@@ -326,19 +353,16 @@ def dashboard(
         )
     else:
         event_id = resolved_event_id
-        user = _get_authenticated_user_from_cookie(request, db)
         if user:
-            if user.role == "admin":
-                user_events = (
-                    db.query(models.Event).order_by(models.Event.name.asc()).all()
-                )
-            else:
+            if user.role in ("organizer", "admin"):
                 user_events = (
                     db.query(models.Event)
                     .filter(models.Event.created_by_user_id == user.id)
                     .order_by(models.Event.name.asc())
                     .all()
                 )
+            else:
+                user_events = []
         elif client is not None:
             user_events = (
                 db.query(models.Event)
@@ -351,7 +375,7 @@ def dashboard(
 
         query = db.query(models.Talk).options(selectinload(models.Talk.jobs))
         if user:
-            if user.role == "organizer":
+            if user.role in ("organizer", "admin"):
                 org_event_ids = [e.id for e in user_events]
                 query = query.filter(models.Talk.event_id.in_(org_event_ids))
                 if event_id is not None:
@@ -359,21 +383,18 @@ def dashboard(
                         query = query.filter(models.Talk.id == -1)
                     else:
                         query = query.filter(models.Talk.event_id == event_id)
-            elif user.role == "admin":
-                if event_id is not None:
-                    query = query.filter(models.Talk.event_id == event_id)
             else:
                 query = query.filter(models.Talk.id == -1)
         elif client is not None:
-            query = query.filter(models.Talk.event_id.in_(client.event_ids))
+            client_event_ids = client.event_ids or []
+            query = query.filter(models.Talk.event_id.in_(client_event_ids))
             if event_id is not None:
-                if event_id not in client.event_ids:
+                if event_id not in client_event_ids:
                     query = query.filter(models.Talk.id == -1)
                 else:
                     query = query.filter(models.Talk.event_id == event_id)
         else:
-            if event_id is not None:
-                query = query.filter(models.Talk.event_id == event_id)
+            query = query.filter(models.Talk.id == -1)
 
     if status_filter:
         query = query.filter(models.Talk.status == status_filter)
@@ -390,25 +411,24 @@ def dashboard(
             .all()
         )
     elif user:
-        if user.role == "organizer":
+        if user.role in ("organizer", "admin"):
             org_event_ids = [e.id for e in user_events]
             all_talks = (
                 db.query(models.Talk)
                 .filter(models.Talk.event_id.in_(org_event_ids))
                 .all()
             )
-        elif user.role == "admin":
-            all_talks = db.query(models.Talk).all()
         else:
             all_talks = []
     elif client is not None:
+        client_event_ids = client.event_ids or []
         all_talks = (
             db.query(models.Talk)
-            .filter(models.Talk.event_id.in_(client.event_ids))
+            .filter(models.Talk.event_id.in_(client_event_ids))
             .all()
         )
     else:
-        all_talks = db.query(models.Talk).all()
+        all_talks = []
 
     all_rooms = sorted({t.room for t in all_talks if t.room})
     status_counts: dict[str, int] = {}
@@ -427,7 +447,9 @@ def dashboard(
         "broken": status_counts.get("broken", 0) + status_counts.get("rejected", 0),
     }
 
-    return templates.TemplateResponse(
+    flash_error = request.cookies.get("flash_error")
+
+    response = templates.TemplateResponse(
         request,
         "dashboard.html.jinja",
         {
@@ -439,9 +461,13 @@ def dashboard(
             "status_filter": status_filter or "",
             "event_id": event_id,
             "user_events": user_events,
+            "error": flash_error,
         },
         headers={"Cache-Control": "no-store"},
     )
+    if request.cookies.get("flash_error"):
+        response.delete_cookie("flash_error", path="/")
+    return response
 
 
 ALLOWED_MEDIA_CATEGORIES = frozenset(
@@ -542,7 +568,7 @@ def get_talk_waveform(
                 return Response(
                     content=raw_bytes,
                     media_type="application/json",
-                    headers={"Cache-Control": "public, max-age=3600"},
+                    headers={"Cache-Control": "private, max-age=3600"},
                 )
             except OSError:
                 logger.warning("Failed reading cached waveform for %s", waveform_key)
@@ -566,6 +592,7 @@ def studio(
     talk_id: int,
     db: Annotated[Session, Depends(get_db)],
     storage: Annotated[StorageBackend, Depends(get_storage_backend)],
+    client: Annotated[models.Client | None, Depends(get_optional_ui_client)] = None,
     sso_token: str | None = None,
 ):
     if sso_token is not None or "sso_token" in request.query_params:
@@ -617,6 +644,31 @@ def studio(
         )
         return resp
 
+    user = _get_authenticated_user_from_cookie(request, db)
+    cookie_token = request.cookies.get("veditor_session")
+    sso_user = decode_sso_token(cookie_token) if cookie_token else None
+
+    if "api_key" in request.query_params:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Query parameter 'api_key' is not supported. Please provide X-API-Key header or veditor_api_key cookie.",
+        )
+
+    if request.headers.get("X-API-Key") and client is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid API Key. Please verify your credentials.",
+        )
+
+    if not user and not sso_user and client is None:
+        resp = RedirectResponse(
+            url=f"/login?next=/studio/talks/{talk_id}",
+            status_code=status.HTTP_302_FOUND,
+        )
+        if request.cookies.get("veditor_api_key"):
+            resp.delete_cookie("veditor_api_key")
+        return resp
+
     talk = _authorize_studio_talk(
         talk_id, request, db, not_found_detail="Talk not found"
     )
@@ -635,12 +687,9 @@ def studio(
 
     # Build categorized media assets that can be watched in the studio
     asset_defs = [
+        ("final", "final.mp4", "Master Video (Final)"),
         ("preview", "preview.mp4", "Preview Video"),
         ("raw", "raw.mp4", "Raw Recording"),
-        ("intro", "intro.mp4", "Opening Title Slate"),
-        ("outro", "outro.mp4", "Outro Slate"),
-        ("cut", "cut.mp4", "Cut Talk Clip"),
-        ("final", "final.mp4", "Master Video (Final)"),
     ]
     media_assets = []
     seen_urls = set()
@@ -658,8 +707,6 @@ def studio(
                         "url": url,
                     }
                 )
-
-    import urllib.parse
 
     for rk in storage.list_keys(f"{talk.id}/raw"):
         fname = Path(rk).name
@@ -706,29 +753,37 @@ def list_studio_events(
 
     user = _get_authenticated_user_from_cookie(request, db)
     if not user:
-        return RedirectResponse(url="/login", status_code=status.HTTP_302_FOUND)
+        return RedirectResponse(
+            url="/login?next=/studio/events",
+            status_code=status.HTTP_302_FOUND,
+        )
 
     if user.role not in ("organizer", "admin"):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Operation requires minimum role 'organizer'",
+        is_secure = (request.url.scheme == "https") or (
+            settings.environment.lower() in ("production", "prod")
         )
+        resp = RedirectResponse(
+            url="/studio",
+            status_code=status.HTTP_302_FOUND,
+        )
+        resp.set_cookie(
+            key="flash_error",
+            value="You do not have the permission to access that page",
+            max_age=10,
+            path="/",
+            httponly=True,
+            samesite="lax",
+            secure=is_secure,
+        )
+        return resp
 
-    if user.role == "admin":
-        events = (
-            db.query(models.Event)
-            .options(selectinload(models.Event.created_by_user))
-            .order_by(models.Event.id.asc())
-            .all()
-        )
-    else:
-        events = (
-            db.query(models.Event)
-            .options(selectinload(models.Event.created_by_user))
-            .filter(models.Event.created_by_user_id == user.id)
-            .order_by(models.Event.id.asc())
-            .all()
-        )
+    events = (
+        db.query(models.Event)
+        .options(selectinload(models.Event.created_by_user))
+        .filter(models.Event.created_by_user_id == user.id)
+        .order_by(models.Event.id.asc())
+        .all()
+    )
 
     return templates.TemplateResponse(
         request,
@@ -766,21 +821,13 @@ def create_studio_event(
 
     clean_name = name.strip()
     if not clean_name:
-        if user.role == "admin":
-            events = (
-                db.query(models.Event)
-                .options(selectinload(models.Event.created_by_user))
-                .order_by(models.Event.id.asc())
-                .all()
-            )
-        else:
-            events = (
-                db.query(models.Event)
-                .options(selectinload(models.Event.created_by_user))
-                .filter(models.Event.created_by_user_id == user.id)
-                .order_by(models.Event.id.asc())
-                .all()
-            )
+        events = (
+            db.query(models.Event)
+            .options(selectinload(models.Event.created_by_user))
+            .filter(models.Event.created_by_user_id == user.id)
+            .order_by(models.Event.id.asc())
+            .all()
+        )
         return templates.TemplateResponse(
             request,
             "events.html.jinja",

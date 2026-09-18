@@ -11,11 +11,11 @@
   {% elif status == 'detecting' %}
     <span class="badge badge-processing"><span class="spinner spinner-sm"></span>Detecting</span>
   {% elif status in ['pending_approval', 'pending_bounds'] %}
-    <span class="badge badge-pending"><span class="badge-dot"></span>Pending Review (Gate 1)</span>
+    <span class="badge badge-pending"><span class="badge-dot"></span>Pending Review</span>
   {% elif status in ['cutting', 'generating_previews', 'transcoding', 'uploading'] %}
     <span class="badge badge-processing"><span class="spinner spinner-sm"></span>{{ status | replace('_', ' ') | title }}</span>
   {% elif status == 'preview' %}
-    <span class="badge badge-preview"><span class="badge-dot"></span>Preview Ready (Gate 2)</span>
+    <span class="badge badge-preview"><span class="badge-dot"></span>Preview Ready</span>
   {% elif status == 'needs_work' %}
     <span class="badge badge-pending"><span class="badge-dot"></span>Needs Work</span>
   {% elif status == 'done' %}
@@ -29,6 +29,12 @@
 
 {% block content %}
 <div class="page-body">
+
+  {% if error %}
+    <div class="alert alert-danger" role="alert">
+      <span>{{ error }}</span>
+    </div>
+  {% endif %}
 
   <!-- Stats Summary Row -->
   <div class="stats-grid">
@@ -139,7 +145,7 @@
         </button>
         <button class="btn btn-primary btn-sm" id="btn-open-quick-talk">
           <svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-          + New Talk
+          New Talk
         </button>
         {% endif %}
       </div>

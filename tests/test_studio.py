@@ -1,16 +1,21 @@
 import json
+import re
 import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import inspect
 
 from app import models
 from app.auth import hash_api_key
 from app.db import SessionLocal, get_db
 from app.main import app
+from app.security import create_session_token, create_sso_token
 from app.storage import INTERMEDIATE_STAGES, LocalDiskBackend, get_storage_backend
+from tests.conftest import generate_clip
 
 
 @pytest.fixture
@@ -65,9 +70,6 @@ def test_static_assets(client: TestClient):
 
 
 def test_templates_have_no_inline_css_or_js():
-    import re
-    from pathlib import Path
-
     templates_dir = Path(__file__).parent.parent / "app" / "ui" / "templates"
     assert templates_dir.is_dir()
 
@@ -102,8 +104,6 @@ def test_templates_have_no_inline_css_or_js():
 
 @pytest.fixture
 def db_session():
-    from sqlalchemy import inspect
-
     db = SessionLocal()
     app.dependency_overrides[get_db] = lambda: db
     created = []
@@ -212,9 +212,12 @@ def test_dashboard_page(client: TestClient, db_session):
         status="waiting_for_files",
     )
     db_session.add(talk)
+    api_key = f"key_{uuid.uuid4().hex}"
+    client_model = models.Client(hashed_key=hash_api_key(api_key), event_ids=[event.id])
+    db_session.add(client_model)
     db_session.commit()
 
-    response = client.get("/studio")
+    response = client.get("/studio", headers={"X-API-Key": api_key})
     assert response.status_code == 200
     assert response.headers.get("cache-control") == "no-store"
     assert "text/html" in response.headers.get("content-type", "")
@@ -246,10 +249,10 @@ def test_talk_studio_page(client: TestClient, db_session):
     db_session.add(client_model)
     db_session.commit()
 
-    # Unauthenticated returns 401 without query parameter guidance
-    unauth = client.get(f"/studio/talks/{talk.id}")
-    assert unauth.status_code == 401
-    assert "api_key query param" not in unauth.text
+    # Unauthenticated browser caller redirects to login with next param
+    unauth = client.get(f"/studio/talks/{talk.id}", follow_redirects=False)
+    assert unauth.status_code == 302
+    assert unauth.headers["location"] == f"/login?next=/studio/talks/{talk.id}"
 
     # Query param fallback is rejected (returns 401)
     query_param_res = client.get(f"/studio/talks/{talk.id}?api_key={api_key}")
@@ -267,11 +270,23 @@ def test_talk_studio_page(client: TestClient, db_session):
     assert "text/html" in response.headers.get("content-type", "")
     assert "Test Studio Detail Talk" in response.text
     assert "Room 101" in response.text
+    assert "Test Studio Page Event" in response.text
+    assert "breadcrumb-event" in response.text
+    assert "breadcrumb-room" in response.text
+    assert "topbar-time-meta" in response.text
+    assert "(30m)" in response.text
+    assert response.text.index("topbar-time-meta") < response.text.index(
+        "topbar-control-group"
+    )
+    assert "broadcast-banner" not in response.text
+    assert f"Talk #{talk.id}" not in response.text
+    assert "Talk Metadata" not in response.text
+    assert "Generated Media Assets" not in response.text
+    assert "Gate 1" not in response.text
+    assert "Gate 2" not in response.text
 
 
 def test_talk_studio_human_session_user_access(client: TestClient, db_session):
-    from app.security import create_session_token
-
     org = models.User(
         email=f"org_{uuid.uuid4().hex[:8]}@example.com",
         hashed_password="hash",
@@ -306,6 +321,12 @@ def test_talk_studio_human_session_user_access(client: TestClient, db_session):
     assert res.status_code == 200
     assert "Human Session Talk" in res.text
     assert "Main Hall" in res.text
+    assert "user-menu-btn" in res.text
+    assert "user-dropdown-menu" in res.text
+    assert "Dark Mode" in res.text
+    assert "Log out" in res.text
+    assert "Gate 1" not in res.text
+    assert "Gate 2" not in res.text
 
     # 2. Admin can access talk via session cookie even if created by someone else
     admin = models.User(
@@ -349,16 +370,14 @@ def test_talk_studio_not_found(client: TestClient, db_session):
     db_session.add(client_model)
     db_session.commit()
 
-    # Unauthenticated returns 401
-    assert client.get("/studio/talks/999999").status_code == 401
+    # Unauthenticated browser caller redirects to login
+    assert client.get("/studio/talks/999999", follow_redirects=False).status_code == 302
 
     response = client.get("/studio/talks/999999", headers={"X-API-Key": api_key})
     assert response.status_code == 404
 
 
 def test_media_serving(client: TestClient, db_session, temp_storage, tmp_path):
-    from tests.conftest import generate_clip
-
     event = models.Event(name=f"Event {uuid.uuid4().hex}")
     db_session.add(event)
     db_session.commit()
@@ -419,8 +438,6 @@ def test_media_serving(client: TestClient, db_session, temp_storage, tmp_path):
 
 
 def test_talk_waveform_endpoint(client: TestClient, db_session, temp_storage, tmp_path):
-    from tests.conftest import generate_clip
-
     event = models.Event(name=f"Waveform Event {uuid.uuid4().hex}")
     db_session.add(event)
     db_session.commit()
@@ -626,8 +643,6 @@ def test_talk_bulk_delete(client: TestClient, db_session):
 
 
 def test_talk_upload_recording(client: TestClient, db_session, temp_storage, tmp_path):
-    from unittest.mock import patch
-
     event = models.Event(name=f"Event {uuid.uuid4().hex}")
     db_session.add(event)
     db_session.commit()
@@ -650,8 +665,6 @@ def test_talk_upload_recording(client: TestClient, db_session, temp_storage, tmp
     db_session.add(talk)
     db_session.commit()
     db_session.refresh(talk)
-
-    from tests.conftest import generate_clip
 
     clip = generate_clip(0.5, output_dir=tmp_path)
     mock_queue = None
@@ -838,7 +851,7 @@ def test_dashboard_and_studio_render_active_job_progress(
     db_session.commit()
 
     # 1. Dashboard should render the progress percentage badge and track
-    dash_res = client.get("/studio")
+    dash_res = client.get("/studio", headers={"X-API-Key": api_key})
     assert dash_res.status_code == 200
     assert "72%" in dash_res.text
     assert "job-progress-fill" in dash_res.text
@@ -907,10 +920,6 @@ def test_ui_reject_talk_cleans_up_intermediates(
     client: TestClient, db_session, fake_storage
 ):
     """Rejecting a talk in review removes cut/ and preview/ while preserving raw/."""
-    import uuid
-
-    from app.auth import hash_api_key
-
     event = models.Event(name=f"Reject Event {uuid.uuid4().hex}")
     db_session.add(event)
     db_session.commit()
@@ -960,11 +969,6 @@ def test_ui_reject_talk_cleans_up_intermediates(
 
 def test_ui_reject_talk_storage_delete_resilient(client: TestClient, db_session):
     """Storage deletion failure on talk rejection does not raise 500."""
-    import uuid
-    from unittest.mock import MagicMock
-
-    from app.auth import hash_api_key
-
     event = models.Event(name=f"Reject Err Event {uuid.uuid4().hex}")
     db_session.add(event)
     db_session.commit()
@@ -1197,8 +1201,6 @@ def test_import_schedule_end_time_only(client: TestClient, db_session):
 
 def test_delete_talk_propagates_storage_error(client: TestClient, db_session):
     """When storage fails during talk deletion, an error is raised and the record is not deleted."""
-    from unittest.mock import MagicMock
-
     event = models.Event(name=f"Event {uuid.uuid4().hex}")
     db_session.add(event)
     db_session.commit()
@@ -1227,8 +1229,6 @@ def test_delete_talk_propagates_storage_error(client: TestClient, db_session):
 
     app.dependency_overrides[get_storage_backend] = lambda: mock_storage
     try:
-        import pytest
-
         with pytest.raises(RuntimeError, match="Cleanup failed"):
             client.delete(f"/talks/{talk.id}", headers={"X-API-Key": api_key})
 
@@ -1294,7 +1294,7 @@ def test_studio_mode_body_class(client: TestClient, db_session):
     assert 'id="sidebar-toggle-btn"' in res.text
 
     # Talks dashboard view
-    res_dash = client.get("/studio")
+    res_dash = client.get("/studio", headers={"X-API-Key": api_key})
     assert res_dash.status_code == 200
     assert "is-studio-mode" in res_dash.text
 
@@ -1329,8 +1329,6 @@ def test_studio_dashboard_with_slug_event_id_and_sso_token(client, db_session):
 
 def test_studio_speaker_timeline_omits_bumpers(client: TestClient, db_session):
     """When viewed with a speaker token, studio scrubber omits INTRO/OUTRO and enables speaker mode."""
-    from app.security import create_sso_token
-
     event = models.Event(name=f"Event {uuid.uuid4().hex}")
     db_session.add(event)
     db_session.commit()
@@ -1367,8 +1365,6 @@ def test_studio_speaker_timeline_omits_bumpers(client: TestClient, db_session):
 
 def test_studio_organizer_timeline_omits_bumpers(client: TestClient, db_session):
     """When viewed by an organizer, studio scrubber also omits INTRO and OUTRO bumper blocks from timeline."""
-    from app.security import create_session_token
-
     org = models.User(
         email=f"org_{uuid.uuid4().hex[:8]}@example.com",
         hashed_password="hash",
@@ -1411,8 +1407,6 @@ def test_studio_organizer_timeline_omits_bumpers(client: TestClient, db_session)
 
 
 def test_studio_upload_pending_state_hides_timeline(client: TestClient, db_session):
-    from app.security import create_session_token
-
     org = models.User(
         email=f"org_{uuid.uuid4().hex[:8]}@example.com",
         hashed_password="hash",
@@ -1511,3 +1505,214 @@ def test_studio_upload_pending_state_hides_timeline(client: TestClient, db_sessi
     assert 'id="cut-duration-badge"' in res_bounds.text
     assert 'id="btn-play-cut"' in res_bounds.text
     assert "timeline-inputs-bar" in res_bounds.text
+
+
+def test_talk_studio_offset_aware_start_normalizes_to_utc(
+    client: TestClient, db_session
+):
+    from datetime import timezone
+
+    event = models.Event(name=f"TZ Event {uuid.uuid4().hex}")
+    db_session.add(event)
+    db_session.commit()
+    db_session.refresh(event)
+
+    # Offset +05:30 (15:30 IST -> 10:00 UTC)
+    ist = timezone(timedelta(hours=5, minutes=30))
+    start_ist = datetime(2026, 9, 15, 15, 30, tzinfo=ist)
+    end_ist = start_ist + timedelta(minutes=45)
+
+    talk = models.Talk(
+        event_id=event.id,
+        title="TZ Talk",
+        room="Hall A",
+        start=start_ist,
+        end=end_ist,
+        status="waiting_for_files",
+    )
+    db_session.add(talk)
+    db_session.commit()
+    db_session.refresh(talk)
+
+    api_key = f"key_{uuid.uuid4().hex}"
+    client_model = models.Client(
+        hashed_key=hash_api_key(api_key),
+        event_ids=[event.id],
+    )
+    db_session.add(client_model)
+    db_session.commit()
+
+    res = client.get(f"/studio/talks/{talk.id}", headers={"X-API-Key": api_key})
+    assert res.status_code == 200
+    assert "Sep 15, 10:00 – 10:45 UTC" in res.text
+    assert "(45m)" in res.text
+
+
+def test_talk_studio_duration_with_seconds_remainder(client: TestClient, db_session):
+    event = models.Event(name=f"Remainder Event {uuid.uuid4().hex}")
+    db_session.add(event)
+    db_session.commit()
+    db_session.refresh(event)
+
+    now = datetime(2026, 9, 15, 10, 0, 0, tzinfo=UTC)
+    talk = models.Talk(
+        event_id=event.id,
+        title="Short Talk",
+        room="Hall B",
+        start=now,
+        end=now + timedelta(seconds=90),
+        status="waiting_for_files",
+    )
+    db_session.add(talk)
+    db_session.commit()
+    db_session.refresh(talk)
+
+    api_key = f"key_{uuid.uuid4().hex}"
+    client_model = models.Client(
+        hashed_key=hash_api_key(api_key),
+        event_ids=[event.id],
+    )
+    db_session.add(client_model)
+    db_session.commit()
+
+    res = client.get(f"/studio/talks/{talk.id}", headers={"X-API-Key": api_key})
+    assert res.status_code == 200
+    assert "Sep 15, 10:00 – 10:01 UTC" in res.text
+    assert "(1m 30s)" in res.text
+
+
+def test_user_menu_accessibility_attributes(client: TestClient, db_session):
+    from app.security import create_session_token
+
+    user = models.User(
+        email="a11y@test.com",
+        hashed_password="hash",
+        role="organizer",
+        is_active=True,
+    )
+    db_session.add(user)
+    db_session.commit()
+    db_session.refresh(user)
+
+    session_token = create_session_token(user_id=user.id, role=user.role)
+    client.cookies.set("veditor_session", session_token)
+
+    res = client.get("/studio")
+    assert res.status_code == 200
+    assert 'aria-label="User menu"' in res.text
+    assert 'aria-expanded="false"' in res.text
+    assert 'aria-controls="user-dropdown-menu"' in res.text
+
+
+def test_talk_studio_media_source_selector_and_download(
+    client: TestClient, db_session, temp_storage, tmp_path
+):
+    from tests.conftest import generate_clip
+
+    event = models.Event(name=f"Media Event {uuid.uuid4().hex}")
+    db_session.add(event)
+    db_session.commit()
+    db_session.refresh(event)
+
+    now = datetime.now(tz=UTC)
+    talk = models.Talk(
+        event_id=event.id,
+        title="Media Talk",
+        room="Hall C",
+        start=now,
+        end=now + timedelta(minutes=30),
+        status="preview",
+    )
+    db_session.add(talk)
+    db_session.commit()
+    db_session.refresh(talk)
+
+    api_key = f"key_{uuid.uuid4().hex}"
+    client_model = models.Client(
+        hashed_key=hash_api_key(api_key),
+        event_ids=[event.id],
+    )
+    db_session.add(client_model)
+    db_session.commit()
+
+    # When no media files exist
+    res = client.get(f"/studio/talks/{talk.id}", headers={"X-API-Key": api_key})
+    assert res.status_code == 200
+    assert 'id="media-source-select"' not in res.text
+
+    # Store raw, preview, cut, and final
+    clip = generate_clip(0.5, output_dir=tmp_path)
+    try:
+        temp_storage.put(f"{talk.id}/raw/raw.mp4", clip)
+        temp_storage.put(f"{talk.id}/preview/preview.mp4", clip)
+        temp_storage.put(f"{talk.id}/cut/cut.mp4", clip)
+        temp_storage.put(f"{talk.id}/final/final.mp4", clip)
+
+        res = client.get(f"/studio/talks/{talk.id}", headers={"X-API-Key": api_key})
+        assert res.status_code == 200
+        assert 'id="media-source-select"' in res.text
+        assert 'id="media-download-btn"' in res.text
+        assert "Master Video (Final)" in res.text
+        assert "Preview Video" in res.text
+        assert "Raw Recording" in res.text
+        # Cut is internal intermediate and should NOT be shown in the UI source dropdown
+        assert "Cut Talk Clip" not in res.text
+        assert f"/studio/media/{talk.id}/cut/cut.mp4" not in res.text
+    finally:
+        clip.unlink(missing_ok=True)
+
+
+def test_talk_studio_speaker_mode_body_class(client: TestClient, db_session):
+    from app.security import create_session_token
+
+    org_user = models.User(
+        email=f"org_{uuid.uuid4().hex}@test.com",
+        hashed_password="hash",
+        role="organizer",
+        is_active=True,
+    )
+    db_session.add(org_user)
+    db_session.commit()
+    db_session.refresh(org_user)
+
+    event = models.Event(
+        name=f"Speaker Mode Event {uuid.uuid4().hex}",
+        created_by_user_id=org_user.id,
+    )
+    db_session.add(event)
+    db_session.commit()
+    db_session.refresh(event)
+
+    now = datetime.now(tz=UTC)
+    talk = models.Talk(
+        event_id=event.id,
+        title="Speaker Mode Talk",
+        room="Hall D",
+        start=now,
+        end=now + timedelta(minutes=30),
+        status="waiting_for_files",
+    )
+    db_session.add(talk)
+    db_session.commit()
+    db_session.refresh(talk)
+
+    # API key only (no user session) -> treated as speaker mode
+    api_key = f"key_{uuid.uuid4().hex}"
+    client_model = models.Client(
+        hashed_key=hash_api_key(api_key),
+        event_ids=[event.id],
+    )
+    db_session.add(client_model)
+    db_session.commit()
+
+    res = client.get(f"/studio/talks/{talk.id}", headers={"X-API-Key": api_key})
+    assert res.status_code == 200
+    assert "is-speaker" in res.text
+
+    # Organizer session -> NOT speaker mode
+    session_token = create_session_token(user_id=org_user.id, role=org_user.role)
+    client.cookies.set("veditor_session", session_token)
+
+    res_org = client.get(f"/studio/talks/{talk.id}")
+    assert res_org.status_code == 200
+    assert "is-speaker" not in res_org.text
