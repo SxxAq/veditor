@@ -31,6 +31,18 @@ def _run_single_worker(
     redis_conn = redis.from_url(redis_url)
     worker = Worker(queues, connection=redis_conn, name=name)
     if with_scheduler:
+        from rq import Queue
+
+        from app.retention import register_periodic_retention_sweep
+
+        scheduler_queue = Queue("light", connection=redis_conn)
+        try:
+            register_periodic_retention_sweep(queue=scheduler_queue)
+        except Exception as exc:  # noqa: BLE001
+            print(
+                f"Warning: Failed to register periodic retention sweep on worker startup: {exc}",
+                file=sys.stderr,
+            )
         worker.work(burst=burst, with_scheduler=True)
     else:
         worker.work(burst=burst)

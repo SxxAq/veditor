@@ -142,13 +142,13 @@ def run_retention_sweep(
             continue
 
         final_prefix = f"{talk.id}/final"
-        existing_keys = (
-            storage.list_keys(final_prefix) if hasattr(storage, "list_keys") else []
-        )
-        if not existing_keys:
-            continue
-
         try:
+            existing_keys = (
+                storage.list_keys(final_prefix) if hasattr(storage, "list_keys") else []
+            )
+            if not existing_keys:
+                continue
+
             storage.delete(final_prefix)
             swept_talk_ids.append(talk.id)
             logger.info(
@@ -158,7 +158,7 @@ def run_retention_sweep(
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning(
-                "Failed to delete final storage for talk %s: %s",
+                "Failed to process final storage for talk %s: %s",
                 talk.id,
                 exc,
             )
@@ -200,6 +200,8 @@ def register_periodic_retention_sweep(
         if interval_seconds is not None
         else settings.retention_sweep_interval_seconds
     )
+    if interval <= 0:
+        raise ValueError("retention sweep interval must be positive")
 
     try:
         existing_job = Job.fetch(

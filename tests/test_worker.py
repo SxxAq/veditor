@@ -103,9 +103,12 @@ def test_worker_burst_and_name_flags(mock_worker_cls, mock_redis_from_url):
     mock_worker.work.assert_called_once_with(burst=True)
 
 
+@patch("app.retention.register_periodic_retention_sweep")
 @patch("scripts.run_worker.redis.from_url")
 @patch("scripts.run_worker.Worker")
-def test_worker_with_scheduler_flag(mock_worker_cls, mock_redis_from_url):
+def test_worker_with_scheduler_flag(
+    mock_worker_cls, mock_redis_from_url, mock_register_sweep
+):
     mock_redis = MagicMock()
     mock_redis_from_url.return_value = mock_redis
     mock_worker = MagicMock()
@@ -113,6 +116,7 @@ def test_worker_with_scheduler_flag(mock_worker_cls, mock_redis_from_url):
 
     main(["light", "--with-scheduler"])
     mock_worker_cls.assert_called_once_with(["light"], connection=mock_redis, name=None)
+    mock_register_sweep.assert_called_once()
     mock_worker.work.assert_called_once_with(burst=False, with_scheduler=True)
 
 

@@ -532,3 +532,54 @@ def test_register_periodic_retention_sweep():
     assert kwargs["job_id"] == "retention_sweep"
     assert kwargs["job_timeout"] == 600
     assert kwargs["repeat"].intervals == [1800]
+
+
+def test_register_periodic_retention_sweep_rejects_non_positive_interval():
+    mock_queue = MagicMock()
+    with pytest.raises(ValueError, match="interval must be positive"):
+        register_periodic_retention_sweep(queue=mock_queue, interval_seconds=0)
+
+    with pytest.raises(ValueError, match="interval must be positive"):
+        register_periodic_retention_sweep(queue=mock_queue, interval_seconds=-10)
+
+
+def test_sweep_handles_list_keys_failure_gracefully(db_session):
+    event = Event(name="Resilience Event")
+    db_session.add(event)
+    db_session.flush()
+
+    past_date = datetime.now(UTC) - timedelta(days=20)
+    talk1 = Talk(
+        event_id=event.id,
+        title="Failing Talk",
+        start=past_date,
+        end=past_date,
+        status="done",
+        updated_at=past_date,
+    )
+    talk2 = Talk(
+        event_id=event.id,
+        title="Succeeding Talk",
+        start=past_date,
+        end=past_date,
+        status="done",
+        updated_at=past_date,
+    )
+    db_session.add_all([talk1, talk2])
+    db_session.flush()
+
+    mock_storage = MagicMock()
+
+    def mock_list_keys(prefix):
+        if prefix.startswith(f"{talk1.id}/"):
+            raise OSError("Simulated disk I/O error")
+        return [f"{prefix}/final.mp4"]
+
+    mock_storage.list_keys.side_effect = mock_list_keys
+
+    swept = run_retention_sweep(db=db_session, storage=mock_storage)
+
+    # talk1 should fail without crashing sweep; talk2 should succeed
+    assert talk1.id not in swept
+    assert talk2.id in swept
+    mock_storage.delete.assert_called_once_with(f"{talk2.id}/final")

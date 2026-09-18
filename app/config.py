@@ -78,12 +78,13 @@ class Settings(BaseSettings):
         "session_token_expire_hours",
         "access_token_expire_seconds",
         "sso_token_expire_seconds",
+        "retention_sweep_interval_seconds",
         mode="after",
     )
     @classmethod
     def validate_token_expirations(cls, value: int) -> int:
         if value <= 0:
-            raise ValueError("token expiration values must be positive")
+            raise ValueError("token expiration and interval values must be positive")
         return value
 
     @field_validator("disk_guard_multiplier", mode="after")
