@@ -230,8 +230,6 @@ def signup_submit(
 
     hashed = hash_password(password)
 
-    # All public registrations strictly receive the default 'user' role.
-    # Elevated roles (organizer, admin) must be granted by an administrator.
     user = models.User(
         email=clean_email,
         hashed_password=hashed,

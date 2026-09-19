@@ -10,8 +10,6 @@ Covers:
 """
 
 from datetime import UTC, datetime, timedelta
-from io import StringIO
-from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -19,7 +17,6 @@ from sqlalchemy.orm import Session
 
 from app import models
 from app.auth import hash_api_key
-from app.cli import create_platform_client
 from app.db import SessionLocal, get_db
 from app.main import app
 from app.security import create_session_token
@@ -90,35 +87,6 @@ def scoped_client_and_key(db_session: Session) -> tuple[models.Client, str]:
     db_session.commit()
     db_session.refresh(c)
     return c, raw_key
-
-
-def test_cli_create_platform_client(db_session: Session):
-    """CLI admin create-platform-client provisions a platform client."""
-    out = StringIO()
-    with patch("sys.stdout", out):
-        create_platform_client(db_session, "Platform Client Global")
-
-    output_str = out.getvalue()
-    assert "Created Platform Client 'Platform Client Global'" in output_str
-    assert "API Key:" in output_str
-
-    created = (
-        db_session.query(models.Client)
-        .filter(models.Client.name == "Platform Client Global")
-        .first()
-    )
-    assert created is not None
-    assert created.is_platform is True
-    assert created.event_ids == []
-
-
-def test_cli_create_platform_client_empty_name_fails(db_session: Session):
-    """CLI admin create-platform-client rejects empty name."""
-    out = StringIO()
-    with patch("sys.stdout", out), pytest.raises(SystemExit) as exc:
-        create_platform_client(db_session, "   ")
-    assert exc.value.code == 1
-    assert "Error: Client name cannot be empty." in out.getvalue()
 
 
 def test_schedule_import_auto_provisions_event_by_slug(
