@@ -97,6 +97,7 @@ def run_retention_sweep(
     import logging
     from datetime import UTC, datetime, timedelta
 
+    from sqlalchemy.exc import SQLAlchemyError
     from sqlalchemy.orm import joinedload
 
     from app.db import SessionLocal
@@ -119,6 +120,7 @@ def run_retention_sweep(
         db.query(Talk)
         .options(joinedload(Talk.event))
         .filter(Talk.status == "done", Talk.final_cleaned_at.is_(None))
+        .order_by(Talk.id.asc())
         .all()
     )
 
@@ -149,18 +151,28 @@ def run_retention_sweep(
             )
             if not existing_keys:
                 talk.final_cleaned_at = now
-                db.flush()
+                try:
+                    db.flush()
+                except SQLAlchemyError:
+                    db.rollback()
+                    raise
                 continue
 
             storage.delete(final_prefix)
             talk.final_cleaned_at = now
             swept_talk_ids.append(talk_id)
-            db.flush()
+            try:
+                db.flush()
+            except SQLAlchemyError:
+                db.rollback()
+                raise
             logger.info(
                 "Deleted final storage for talk %s (%s keys removed)",
                 talk_id,
                 len(existing_keys),
             )
+        except SQLAlchemyError:
+            raise
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "Failed to process final storage for talk %s: %s",
@@ -168,7 +180,11 @@ def run_retention_sweep(
                 exc,
             )
 
-    db.commit()
+    try:
+        db.commit()
+    except SQLAlchemyError:
+        db.rollback()
+        raise
     return swept_talk_ids
 
 
@@ -188,11 +204,13 @@ def register_periodic_retention_sweep(
     queue: Any | None = None,
     interval_seconds: int | None = None,
     times: int | None = None,
+    retry: Any | None = None,
 ) -> Any:
     """Register a scheduled periodic retention sweep job on the RQ queue."""
     import logging
     from datetime import timedelta
 
+    from rq import Retry
     from rq.job import Job
     from rq.repeat import Repeat
 
@@ -239,6 +257,7 @@ def register_periodic_retention_sweep(
         times=repeat_times,
         interval=interval,
     )
+    retry_policy = retry if retry is not None else Retry(max=3, interval=[60, 180, 300])
     try:
         return target_queue.enqueue_in(
             timedelta(seconds=interval),
@@ -246,6 +265,7 @@ def register_periodic_retention_sweep(
             job_id=RETENTION_SWEEP_JOB_ID,
             job_timeout=600,
             repeat=repeat,
+            retry=retry_policy,
             description="Periodic retention sweep for expired final artifacts",
         )
     except Exception as exc:

@@ -659,3 +659,71 @@ def test_register_periodic_retention_sweep_times_parameter():
         register_periodic_retention_sweep(
             queue=mock_queue, interval_seconds=600, times=0
         )
+
+
+def test_sweep_raises_and_stops_on_db_flush_failure(db_session):
+    from sqlalchemy.exc import SQLAlchemyError
+
+    event = Event(name="Flush Failure Event")
+    db_session.add(event)
+    db_session.flush()
+
+    past_date = datetime.now(UTC) - timedelta(days=20)
+    talk1 = Talk(
+        event_id=event.id,
+        title="First Talk",
+        start=past_date,
+        end=past_date,
+        status="done",
+        updated_at=past_date,
+    )
+    talk2 = Talk(
+        event_id=event.id,
+        title="Second Talk",
+        start=past_date,
+        end=past_date,
+        status="done",
+        updated_at=past_date,
+    )
+    db_session.add_all([talk1, talk2])
+    db_session.flush()
+
+    mock_storage = MagicMock()
+    mock_storage.list_keys.return_value = ["dummy.mp4"]
+
+    original_flush = db_session.flush
+
+    def failing_flush():
+        raise SQLAlchemyError("Simulated database flush failure")
+
+    db_session.flush = failing_flush
+    try:
+        with pytest.raises(SQLAlchemyError, match="Simulated database flush failure"):
+            run_retention_sweep(db=db_session, storage=mock_storage)
+    finally:
+        db_session.flush = original_flush
+
+    # Storage delete should have been called for talk1 before flush failed,
+    # but NOT for talk2 since the sweep stops immediately
+    assert mock_storage.delete.call_count == 1
+    assert mock_storage.delete.call_args[0][0] == f"{talk1.id}/final"
+
+
+def test_register_periodic_retention_sweep_retry():
+    from rq import Retry
+
+    mock_queue = MagicMock()
+    mock_queue.connection = MagicMock()
+
+    job = register_periodic_retention_sweep(queue=mock_queue, interval_seconds=1800)
+    assert job is not None
+    _, kwargs = mock_queue.enqueue_in.call_args
+    assert "retry" in kwargs
+    assert kwargs["retry"].max == 3
+
+    custom_retry = Retry(max=5)
+    register_periodic_retention_sweep(
+        queue=mock_queue, interval_seconds=1800, retry=custom_retry
+    )
+    _, kwargs = mock_queue.enqueue_in.call_args
+    assert kwargs["retry"] == custom_retry

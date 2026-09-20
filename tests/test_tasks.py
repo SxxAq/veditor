@@ -1219,4 +1219,3 @@ def test_job_waveform_generates_when_needed():
     mock_cache.assert_called_once_with(
         mock_storage, "1/preview/preview.mp4", Path("/tmp/fake_preview.mp4")
     )
-
