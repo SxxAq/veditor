@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from pydantic import field_validator
+from pydantic import PositiveInt, field_validator
 from pydantic_settings import BaseSettings
 
 
@@ -50,6 +50,7 @@ class Settings(BaseSettings):
     preview_presets: dict[str, PreviewPreset] = PREVIEW_PRESETS
     disk_guard_multiplier: float = 3.0
     retention_sweep_interval_seconds: int = 3600
+    max_bumper_upload_size_bytes: PositiveInt = 100 * 1024 * 1024
 
     environment: str = "development"
     session_secret: str | None = None

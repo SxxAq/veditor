@@ -43,6 +43,7 @@ from app.retention import (
 from app.states import advance
 from app.storage import (
     StorageKeyNotFoundError,
+    cleanup_bumpers,
     cleanup_intermediates,
     get_storage_backend,
 )
@@ -856,7 +857,10 @@ def job_transcode(
             job.status = "done"
             job.progress_pct = 100.0
             job.updated_at = datetime.now(UTC)
+            custom_paths = (talk.custom_intro_path, talk.custom_outro_path)
             db.commit()
+
+        cleanup_bumpers(storage, talk_id, custom_paths)
 
         light_queue.enqueue(
             job_publish,
