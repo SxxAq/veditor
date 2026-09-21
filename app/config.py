@@ -52,6 +52,7 @@ class Settings(BaseSettings):
     max_bumper_upload_size_bytes: PositiveInt = 100 * 1024 * 1024
 
     environment: str = "development"
+    base_url: str = ""
     session_secret: str | None = None
     jwt_algorithm: str = "HS256"
     session_token_expire_hours: int = 168
