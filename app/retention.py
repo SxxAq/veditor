@@ -145,18 +145,18 @@ def run_retention_sweep(
 
         final_prefix = f"{talk.id}/final"
         talk_id = talk.id
+        existing_keys = None
         try:
-            existing_keys = (
-                storage.list_keys(final_prefix) if hasattr(storage, "list_keys") else []
-            )
-            if not existing_keys:
-                talk.final_cleaned_at = now
-                try:
-                    db.flush()
-                except SQLAlchemyError:
-                    db.rollback()
-                    raise
-                continue
+            if hasattr(storage, "list_keys"):
+                existing_keys = storage.list_keys(final_prefix)
+                if not existing_keys:
+                    talk.final_cleaned_at = now
+                    try:
+                        db.flush()
+                    except SQLAlchemyError:
+                        db.rollback()
+                        raise
+                    continue
 
             storage.delete(final_prefix)
             talk.final_cleaned_at = now
@@ -169,7 +169,7 @@ def run_retention_sweep(
             logger.info(
                 "Deleted final storage for talk %s (%s keys removed)",
                 talk_id,
-                len(existing_keys),
+                len(existing_keys) if existing_keys is not None else "unknown",
             )
         except SQLAlchemyError:
             raise

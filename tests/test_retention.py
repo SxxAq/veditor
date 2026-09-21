@@ -727,3 +727,37 @@ def test_register_periodic_retention_sweep_retry():
     )
     _, kwargs = mock_queue.enqueue_in.call_args
     assert kwargs["retry"] == custom_retry
+
+
+def test_sweep_deletes_when_storage_lacks_list_keys(db_session):
+    event = Event(name="No List Keys Event")
+    db_session.add(event)
+    db_session.flush()
+
+    past_date = datetime.now(UTC) - timedelta(days=20)
+    talk = Talk(
+        event_id=event.id,
+        title="No ListKeys Talk",
+        start=past_date,
+        end=past_date,
+        status="done",
+        updated_at=past_date,
+    )
+    db_session.add(talk)
+    db_session.flush()
+
+    # Minimal storage mock without list_keys attribute
+    class StorageWithoutListKeys:
+        def __init__(self):
+            self.deleted_prefixes = []
+
+        def delete(self, prefix: str) -> None:
+            self.deleted_prefixes.append(prefix)
+
+    mock_storage = StorageWithoutListKeys()
+    assert not hasattr(mock_storage, "list_keys")
+
+    swept = run_retention_sweep(db=db_session, storage=mock_storage)
+    assert talk.id in swept
+    assert mock_storage.deleted_prefixes == [f"{talk.id}/final"]
+    assert talk.final_cleaned_at is not None
