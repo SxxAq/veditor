@@ -1,6 +1,7 @@
 """Review decision handlers."""
 
 import logging
+import traceback
 from collections.abc import Callable
 
 from fastapi import HTTPException, status
@@ -64,9 +65,40 @@ def handle_approve(
     storage: StorageBackend | None = None,
     user_id: int | None = None,
 ) -> schemas.ReviewResponse:
-    return _record_review_and_advance(
-        talk, payload, "pending_intro_outro", db, user_id=user_id
+    cut_keys = storage.list_keys(f"{talk.id}/cut/") if storage else []
+    cut_key = cut_keys[0] if cut_keys else f"{talk.id}/cut/cut.mp4"
+
+    response = _record_review_and_advance(
+        talk, payload, "assembling", db, user_id=user_id
     )
+
+    from app.tasks import dispatch_assembly
+
+    try:
+        dispatch_assembly(talk.id, cut_key)
+    except Exception:
+        advance(talk, "broken")
+        log_key = f"{talk.id}/logs/assembly.log" if storage else None
+        if log_key:
+            try:
+                storage.put(log_key, traceback.format_exc().encode("utf-8"))
+            except Exception as log_err:  # noqa: BLE001
+                logger.warning(
+                    "Failed to persist dispatch failure log to storage: %s", log_err
+                )
+                log_key = None
+        db.add(
+            models.Job(
+                talk_id=talk.id,
+                kind="assembly",
+                status="failed",
+                log_path=log_key,
+            )
+        )
+        db.commit()
+        raise
+
+    return response
 
 
 def handle_needs_work(
@@ -91,7 +123,7 @@ def handle_reject(
     talk.cut_start = None
     talk.cut_end = None
     response = _record_review_and_advance(
-        talk, payload, "rejected", db, user_id=user_id
+        talk, payload, "pending_bounds", db, user_id=user_id
     )
     if storage is not None:
         cleanup_intermediates(storage, talk.id)

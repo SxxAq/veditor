@@ -105,6 +105,7 @@ class TalkBase(BaseModel):
     start: datetime
     end: datetime
     status: str = "waiting_for_files"
+    speaker_email: str | None = None
     external_id: str | None = None
 
 
@@ -320,6 +321,7 @@ class IntroOutroRequest(BaseModel):
     outro_source: Literal["generated", "custom"] = "generated"
     custom_intro_path: str | None = None
     custom_outro_path: str | None = None
+    speaker_email: str | None = None
 
     @model_validator(mode="after")
     def validate_custom_paths(self):
@@ -358,7 +360,7 @@ class UserRead(BaseModel):
 
 
 class UserPromoteRequest(BaseModel):
-    role: Literal["user", "organizer", "admin"]
+    role: Literal["user", "organizer", "speaker", "admin"]
 
 
 class EventSSOTokenRequest(BaseModel):
@@ -413,6 +415,7 @@ class TalkUpdate(BaseModel):
     room: str | None = None
     start: datetime | None = None
     end: datetime | None = None
+    speaker_email: str | None = None
 
 
 class BulkDeleteRequest(BaseModel):

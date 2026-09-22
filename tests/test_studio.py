@@ -1014,10 +1014,10 @@ def test_ui_reject_talk_cleans_up_intermediates(
             headers={"X-API-Key": api_key},
         )
         assert res.status_code == 200
-        assert res.json()["talk"]["status"] == "rejected"
+        assert res.json()["talk"]["status"] == "pending_bounds"
 
         db_session.refresh(talk)
-        assert talk.status == "rejected"
+        assert talk.status == "pending_bounds"
 
         assert fake_storage.exists(f"{talk.id}/raw/video.mp4")
         for stage in INTERMEDIATE_STAGES:
@@ -1062,10 +1062,10 @@ def test_ui_reject_talk_storage_delete_resilient(client: TestClient, db_session)
             headers={"X-API-Key": api_key},
         )
         assert res.status_code == 200
-        assert res.json()["talk"]["status"] == "rejected"
+        assert res.json()["talk"]["status"] == "pending_bounds"
 
         db_session.refresh(talk)
-        assert talk.status == "rejected"
+        assert talk.status == "pending_bounds"
         assert mock_storage.delete.call_count == 5
     finally:
         app.dependency_overrides.pop(get_storage_backend, None)
@@ -1638,8 +1638,18 @@ def test_studio_organizer_bumper_studio_in_pending_intro_outro(
     assert 'id="check-include-outro"' in res.text
     assert 'name="outro_source"' in res.text
     assert 'id="custom-outro-file"' in res.text
-    assert 'id="custom-outro-path"' in res.text
-    assert "Start Master Assembly & Transcode" in res.text
+    assert "Handoff to Speaker" in res.text
+    assert 'id="handoff-speaker-email"' in res.text
+    assert "Assign Speaker (Email)" in res.text
+
+    # Verify talk with speaker_email already set renders assigned email display (no input)
+    talk.speaker_email = "presenter@example.com"
+    db_session.commit()
+    res_with_speaker = client.get(f"/studio/talks/{talk.id}")
+    assert res_with_speaker.status_code == 200
+    assert 'id="handoff-speaker-email"' not in res_with_speaker.text
+    assert "Assigned Speaker" in res_with_speaker.text
+    assert "presenter@example.com" in res_with_speaker.text
 
     # 2. SSO Organizer session
     sso_org_token = create_sso_token(
@@ -2125,6 +2135,8 @@ def test_talk_studio_speaker_mode_body_class(client: TestClient, db_session):
     res = client.get(f"/studio/talks/{talk.id}", headers={"X-API-Key": api_key})
     assert res.status_code == 200
     assert "is-speaker" in res.text
+    assert 'id="sidebar-toggle-btn"' in res.text
+    assert 'id="app-sidebar"' in res.text
 
     # Organizer session -> NOT speaker mode
     session_token = create_session_token(user_id=org_user.id, role=org_user.role)
@@ -2133,3 +2145,489 @@ def test_talk_studio_speaker_mode_body_class(client: TestClient, db_session):
     res_org = client.get(f"/studio/talks/{talk.id}")
     assert res_org.status_code == 200
     assert "is-speaker" not in res_org.text
+    assert 'id="sidebar-toggle-btn"' in res_org.text
+    assert 'id="app-sidebar"' in res_org.text
+
+    # SSO Organizer session -> NOT speaker mode
+    from app.security import create_sso_token
+
+    sso_org_token = create_sso_token(
+        scope_type="talk", scope_id=talk.id, role="organizer"
+    )
+    client.cookies.set("veditor_session", sso_org_token)
+    res_sso_org = client.get(f"/studio/talks/{talk.id}")
+    assert res_sso_org.status_code == 200
+    assert "is-speaker" not in res_sso_org.text
+
+    # SSO Speaker session -> IS speaker mode
+    sso_spk_token = create_sso_token(
+        scope_type="talk", scope_id=talk.id, role="speaker"
+    )
+    client.cookies.set("veditor_session", sso_spk_token)
+    res_sso_spk = client.get(f"/studio/talks/{talk.id}")
+    assert res_sso_spk.status_code == 200
+    assert "is-speaker" in res_sso_spk.text
+
+
+def test_talk_studio_speaker_preview_quality_notice(client: TestClient, db_session):
+    """Test low-quality preview notice is displayed when viewing preview in speaker mode."""
+    from app.security import create_session_token
+
+    org_user = models.User(
+        email=f"org_{uuid.uuid4().hex[:8]}@example.com",
+        hashed_password="hash",
+        role="organizer",
+    )
+    speaker_user = models.User(
+        email="speaker@domain.com",
+        hashed_password="hash",
+        role="speaker",
+    )
+    db_session.add(org_user)
+    db_session.add(speaker_user)
+    db_session.commit()
+    db_session.refresh(org_user)
+    db_session.refresh(speaker_user)
+
+    event = models.Event(
+        name=f"Preview Notice Event {uuid.uuid4().hex}",
+        created_by_user_id=org_user.id,
+    )
+    db_session.add(event)
+    db_session.commit()
+    db_session.refresh(event)
+
+    now = datetime.now(tz=UTC)
+    talk = models.Talk(
+        event_id=event.id,
+        title="Preview Quality Talk",
+        room="Hall P",
+        start=now,
+        end=now + timedelta(minutes=30),
+        status="preview",
+        speaker_email="speaker@domain.com",
+    )
+    db_session.add(talk)
+    db_session.commit()
+    db_session.refresh(talk)
+
+    # 1. Speaker session -> preview quality notice is displayed
+    speaker_token = create_session_token(
+        user_id=speaker_user.id, role=speaker_user.role
+    )
+    client.cookies.set("veditor_session", speaker_token)
+    res_speaker = client.get(f"/studio/talks/{talk.id}")
+    assert res_speaker.status_code == 200
+    assert 'id="preview-quality-notice"' in res_speaker.text
+    assert "Low-Quality Preview" in res_speaker.text
+
+    # 2. Organizer session -> preview quality notice is omitted
+    org_token = create_session_token(user_id=org_user.id, role=org_user.role)
+    client.cookies.set("veditor_session", org_token)
+    res_org = client.get(f"/studio/talks/{talk.id}")
+    assert res_org.status_code == 200
+    assert 'id="preview-quality-notice"' not in res_org.text
+
+
+def test_dashboard_role_visibility(client: TestClient, db_session):
+    """Verify speaker and user roles cannot see management and delete buttons on dashboard."""
+    from app.security import create_session_token
+
+    org_user = models.User(
+        email=f"org_{uuid.uuid4().hex[:8]}@example.com",
+        hashed_password="hash",
+        role="organizer",
+    )
+    speaker_user = models.User(
+        email="speaker_dash@domain.com",
+        hashed_password="hash",
+        role="speaker",
+    )
+    regular_user = models.User(
+        email=f"user_{uuid.uuid4().hex[:8]}@example.com",
+        hashed_password="hash",
+        role="user",
+    )
+    db_session.add(org_user)
+    db_session.add(speaker_user)
+    db_session.add(regular_user)
+    db_session.commit()
+
+    event = models.Event(
+        name=f"Dashboard Visibility Event {uuid.uuid4().hex}",
+        created_by_user_id=org_user.id,
+    )
+    db_session.add(event)
+    db_session.commit()
+    db_session.refresh(event)
+
+    now = datetime.now(tz=UTC)
+    talk = models.Talk(
+        event_id=event.id,
+        title="Dashboard Visibility Talk",
+        room="Hall D",
+        start=now,
+        end=now + timedelta(minutes=30),
+        status="waiting_for_files",
+        speaker_email="speaker_dash@domain.com",
+    )
+    db_session.add(talk)
+    db_session.commit()
+    db_session.refresh(talk)
+
+    restricted_elements = [
+        'id="btn-open-import"',
+        'id="btn-open-room-attach"',
+        'id="btn-open-quick-talk"',
+        "btn-delete-talk",
+        'id="bulk-actions-bar"',
+        'id="select-all-talks"',
+        'class="talk-checkbox"',
+        'id="btn-events-link"',
+        'id="modal-import"',
+        'id="modal-attach-room"',
+        'id="modal-quick-talk"',
+    ]
+
+    # 1. Speaker session: can see assigned talk, but cannot see restricted controls
+    speaker_token = create_session_token(
+        user_id=speaker_user.id, role=speaker_user.role
+    )
+    client.cookies.set("veditor_session", speaker_token)
+    res_speaker = client.get("/studio")
+    assert res_speaker.status_code == 200
+    assert "Dashboard Visibility Talk" in res_speaker.text
+    assert "Open Studio" in res_speaker.text
+    for elem in restricted_elements:
+        assert elem not in res_speaker.text
+
+    # 2. Regular user session: cannot see restricted controls
+    user_token = create_session_token(user_id=regular_user.id, role=regular_user.role)
+    client.cookies.set("veditor_session", user_token)
+    res_user = client.get("/studio")
+    assert res_user.status_code == 200
+    for elem in restricted_elements:
+        assert elem not in res_user.text
+
+    # 3. Organizer session: can see all management controls
+    org_token = create_session_token(user_id=org_user.id, role=org_user.role)
+    client.cookies.set("veditor_session", org_token)
+    res_org = client.get("/studio")
+    assert res_org.status_code == 200
+    assert "Dashboard Visibility Talk" in res_org.text
+    for elem in restricted_elements:
+        assert elem in res_org.text
+
+
+def test_talk_studio_reset_to_raw_modal_and_no_retry_button(
+    client: TestClient, db_session
+):
+    """Verify Reset to Raw modal is present and extra-step btn-retry is absent in studio UI."""
+    from app.security import create_session_token
+
+    org_user = models.User(
+        email=f"org_{uuid.uuid4().hex}@test.com",
+        hashed_password="hash",
+        role="organizer",
+        is_active=True,
+    )
+    db_session.add(org_user)
+    db_session.commit()
+    db_session.refresh(org_user)
+
+    event = models.Event(
+        name=f"Modal Test Event {uuid.uuid4().hex}",
+        created_by_user_id=org_user.id,
+    )
+    db_session.add(event)
+    db_session.commit()
+    db_session.refresh(event)
+
+    now = datetime.now(tz=UTC)
+    talk = models.Talk(
+        event_id=event.id,
+        title="Reset Raw Modal Talk",
+        room="Main Hall",
+        start=now,
+        end=now + timedelta(minutes=30),
+        status="preview",
+        cut_start=10.0,
+        cut_end=20.0,
+    )
+    db_session.add(talk)
+    db_session.commit()
+    db_session.refresh(talk)
+
+    token = create_session_token(user_id=org_user.id, role=org_user.role)
+    client.cookies.set("veditor_session", token)
+
+    res = client.get(f"/studio/talks/{talk.id}")
+    assert res.status_code == 200
+    # Native website modal elements for resetting to raw
+    assert 'id="modal-reset-raw"' in res.text
+    assert 'id="btn-confirm-reset-raw"' in res.text
+    assert 'id="btn-cancel-reset-raw-modal"' in res.text
+    assert 'id="btn-close-reset-raw-modal"' in res.text
+    assert "Reset Talk to Raw" in res.text
+    assert 'id="btn-reject"' in res.text
+    # Ensure extra step retry lifecycle button is removed
+    assert 'id="btn-retry"' not in res.text
+    assert "Retry Talk Lifecycle" not in res.text
+
+
+def test_dashboard_speaker_email_case_insensitivity(client: TestClient, db_session):
+    """Verify that speaker dashboard queries match talks case-insensitively while respecting event_id."""
+    from app.security import create_session_token
+
+    org_user = models.User(
+        email=f"org_{uuid.uuid4().hex[:8]}@example.com",
+        hashed_password="hash",
+        role="organizer",
+    )
+    speaker_user = models.User(
+        email="Speaker.Case@Example.com",
+        hashed_password="hash",
+        role="speaker",
+    )
+    db_session.add(org_user)
+    db_session.add(speaker_user)
+    db_session.commit()
+
+    event1 = models.Event(
+        name=f"Event 1 {uuid.uuid4().hex}",
+        created_by_user_id=org_user.id,
+    )
+    event2 = models.Event(
+        name=f"Event 2 {uuid.uuid4().hex}",
+        created_by_user_id=org_user.id,
+    )
+    db_session.add(event1)
+    db_session.add(event2)
+    db_session.commit()
+
+    now = datetime.now(tz=UTC)
+    talk1 = models.Talk(
+        event_id=event1.id,
+        title="Matching Talk Upper",
+        room="Room 1",
+        start=now,
+        end=now + timedelta(minutes=30),
+        status="waiting_for_files",
+        speaker_email="SPEAKER.CASE@EXAMPLE.COM",
+    )
+    talk2 = models.Talk(
+        event_id=event2.id,
+        title="Matching Talk Lower",
+        room="Room 2",
+        start=now,
+        end=now + timedelta(minutes=30),
+        status="waiting_for_files",
+        speaker_email="speaker.case@example.com",
+    )
+    talk_other = models.Talk(
+        event_id=event1.id,
+        title="Unrelated Other Talk",
+        room="Room 3",
+        start=now,
+        end=now + timedelta(minutes=30),
+        status="waiting_for_files",
+        speaker_email="someone.else@example.com",
+    )
+    db_session.add(talk1)
+    db_session.add(talk2)
+    db_session.add(talk_other)
+    db_session.commit()
+
+    token = create_session_token(user_id=speaker_user.id, role=speaker_user.role)
+    client.cookies.set("veditor_session", token)
+
+    # 1. Unfiltered dashboard shows both case-matching talks, excludes unrelated talk
+    res = client.get("/studio")
+    assert res.status_code == 200
+    assert "Matching Talk Upper" in res.text
+    assert "Matching Talk Lower" in res.text
+    assert "Unrelated Other Talk" not in res.text
+
+    # 2. Filtered dashboard by event_id shows only matching talk in that event
+    res_event1 = client.get(f"/studio?event_id={event1.id}")
+    assert res_event1.status_code == 200
+    assert "Matching Talk Upper" in res_event1.text
+    assert "Matching Talk Lower" not in res_event1.text
+    assert "Unrelated Other Talk" not in res_event1.text
+
+
+def test_talk_jobs_log_path_gated_for_speakers(client: TestClient, db_session):
+    """Verify speakers can view talk jobs status and progress but never log_path, preserving it for organizer/admin."""
+    from app.security import create_session_token
+
+    org_user = models.User(
+        email=f"org_{uuid.uuid4().hex[:8]}@example.com",
+        hashed_password="hash",
+        role="organizer",
+    )
+    speaker_user = models.User(
+        email="speaker.dev@example.com",
+        hashed_password="hash",
+        role="speaker",
+    )
+    admin_user = models.User(
+        email=f"admin_{uuid.uuid4().hex[:8]}@example.com",
+        hashed_password="hash",
+        role="admin",
+    )
+    db_session.add(org_user)
+    db_session.add(speaker_user)
+    db_session.add(admin_user)
+    db_session.commit()
+
+    event = models.Event(
+        name=f"Event {uuid.uuid4().hex}",
+        created_by_user_id=org_user.id,
+    )
+    db_session.add(event)
+    db_session.commit()
+
+    now = datetime.now(tz=UTC)
+    talk = models.Talk(
+        event_id=event.id,
+        title="Job Log Security Talk",
+        room="Hall Security",
+        start=now,
+        end=now + timedelta(minutes=30),
+        status="transcoding",
+        speaker_email="SPEAKER.DEV@EXAMPLE.COM",
+    )
+    db_session.add(talk)
+    db_session.commit()
+
+    log_key = f"{talk.id}/logs/job_sensitive.log"
+    job = models.Job(
+        talk_id=talk.id,
+        kind="transcode",
+        status="running",
+        progress_pct=45.0,
+        log_path=log_key,
+        started_at=now - timedelta(seconds=20),
+        updated_at=now,
+    )
+    db_session.add(job)
+    db_session.commit()
+
+    # 1. Speaker session: receives status and progress, but log_path is stripped (None)
+    speaker_token = create_session_token(
+        user_id=speaker_user.id, role=speaker_user.role
+    )
+    client.cookies.set("veditor_session", speaker_token)
+    res_speaker = client.get(f"/talks/{talk.id}/jobs")
+    assert res_speaker.status_code == 200
+    data_speaker = res_speaker.json()
+    assert data_speaker["status"] == "transcoding"
+    assert len(data_speaker["jobs"]) == 1
+    assert data_speaker["jobs"][0]["progress_pct"] == 45.0
+    assert data_speaker["jobs"][0]["log_path"] is None
+
+    # 2. Organizer session: preserves log_path
+    org_token = create_session_token(user_id=org_user.id, role=org_user.role)
+    client.cookies.set("veditor_session", org_token)
+    res_org = client.get(f"/talks/{talk.id}/jobs")
+    assert res_org.status_code == 200
+    data_org = res_org.json()
+    assert data_org["jobs"][0]["log_path"] == log_key
+
+    # 3. Admin session: preserves log_path
+    admin_token = create_session_token(user_id=admin_user.id, role=admin_user.role)
+    client.cookies.set("veditor_session", admin_token)
+    res_admin = client.get(f"/talks/{talk.id}/jobs")
+    assert res_admin.status_code == 200
+    data_admin = res_admin.json()
+    assert data_admin["jobs"][0]["log_path"] == log_key
+
+
+def test_event_scoped_speaker_sso_talk_filtering_and_authorization(
+    client: TestClient, db_session
+):
+    """Verify event-scoped speaker SSO tokens only view and access assigned talks in the event."""
+    from app.security import create_sso_token
+
+    org_user = models.User(
+        email=f"org_{uuid.uuid4().hex[:8]}@example.com",
+        hashed_password="hash",
+        role="organizer",
+    )
+    db_session.add(org_user)
+    db_session.commit()
+
+    event = models.Event(
+        name=f"SSO Event {uuid.uuid4().hex}",
+        created_by_user_id=org_user.id,
+    )
+    db_session.add(event)
+    db_session.commit()
+
+    now = datetime.now(tz=UTC)
+    my_talk = models.Talk(
+        event_id=event.id,
+        title="Speaker Assigned Talk",
+        room="Hall 1",
+        start=now,
+        end=now + timedelta(minutes=30),
+        status="waiting_for_files",
+        speaker_email="speaker.auth@example.com",
+    )
+    other_talk = models.Talk(
+        event_id=event.id,
+        title="Other Speaker Talk",
+        room="Hall 2",
+        start=now,
+        end=now + timedelta(minutes=30),
+        status="waiting_for_files",
+        speaker_email="someone.else@example.com",
+    )
+    db_session.add(my_talk)
+    db_session.add(other_talk)
+    db_session.commit()
+
+    sso_token = create_sso_token(
+        scope_type="event",
+        scope_id=event.id,
+        role="speaker",
+        email="speaker.auth@example.com",
+        display_name="Assigned Speaker",
+    )
+    client.cookies.set("veditor_session", sso_token)
+
+    # 1. Dashboard only shows assigned talk, excludes other talk in same event
+    res_dash = client.get("/studio")
+    assert res_dash.status_code == 200
+    assert "Speaker Assigned Talk" in res_dash.text
+    assert "Other Speaker Talk" not in res_dash.text
+
+    # 2. Studio editor allows access to assigned talk
+    res_my_talk = client.get(f"/studio/talks/{my_talk.id}")
+    assert res_my_talk.status_code == 200
+    assert "Speaker Assigned Talk" in res_my_talk.text
+
+    # 3. Studio editor rejects access to other speaker's talk in same event (404)
+    res_other_talk = client.get(f"/studio/talks/{other_talk.id}")
+    assert res_other_talk.status_code == 404
+
+    # 4. Direct query-param handoff for assigned talk succeeds (303)
+    client.cookies.delete("veditor_session")
+    res_handoff_my = client.get(
+        f"/studio/talks/{my_talk.id}?sso_token={sso_token}", follow_redirects=False
+    )
+    assert res_handoff_my.status_code == 303
+
+    # 5. Direct query-param handoff for unrelated talk is forbidden (403)
+    res_handoff_other = client.get(
+        f"/studio/talks/{other_talk.id}?sso_token={sso_token}", follow_redirects=False
+    )
+    assert res_handoff_other.status_code == 403
+
+    # 6. Backend API with check_talk_access allows assigned talk and forbids other talk
+    client.cookies.set("veditor_session", sso_token)
+    res_api_my = client.get(f"/talks/{my_talk.id}")
+    assert res_api_my.status_code == 200
+
+    res_api_other = client.get(f"/talks/{other_talk.id}")
+    assert res_api_other.status_code == 403

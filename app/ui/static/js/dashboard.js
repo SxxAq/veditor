@@ -11,7 +11,9 @@ const STATUS_BADGE_MAP = {
   detecting:           '<span class="badge badge-amber badge-pulse"><span class="badge-dot"></span>Detecting</span>',
   approval_pending:    '<span class="badge badge-orange badge-pulse"><span class="badge-dot"></span>Pending Review</span>',
   pending_approval:    '<span class="badge badge-orange badge-pulse"><span class="badge-dot"></span>Pending Review</span>',
+  pending_intro_outro: '<span class="badge badge-orange badge-pulse"><span class="badge-dot"></span>Pending Bumpers</span>',
   pending_bounds:      '<span class="badge badge-orange badge-pulse"><span class="badge-dot"></span>Pending Bounds</span>',
+  needs_work:          '<span class="badge badge-orange badge-pulse"><span class="badge-dot"></span>Needs Work</span>',
   cutting:             '<span class="badge badge-blue badge-pulse"><span class="badge-dot"></span>Cutting</span>',
   generating_previews: '<span class="badge badge-blue badge-pulse"><span class="badge-dot"></span>Generating Previews</span>',
   normalizing:         '<span class="badge badge-blue badge-pulse"><span class="badge-dot"></span>Normalizing</span>',
@@ -119,8 +121,12 @@ async function pollTalk(talkId) {
 }
 
 function startPolling() {
+  const isSessionLoggedIn = Boolean(
+    document.querySelector('.user-email') ||
+    document.getElementById('logout-btn')
+  );
   const key = (window.getApiKey && window.getApiKey()) || '';
-  if (!key) return;
+  if (!key && !isSessionLoggedIn) return;
   const ids = getActiveTalkIds();
   if (ids.length === 0) return;
   ids.forEach(id => pollTalk(id));
@@ -268,7 +274,7 @@ window.openQuickTalkModal = function() {
       btn.dataset.origText = 'Create Talk';
     }
     if (eventSel) eventSel.parentElement.style.display = '';
-    ['title', 'room', 'start', 'end'].forEach(k => {
+    ['title', 'room', 'start', 'end', 'speaker-email'].forEach(k => {
       const el = document.getElementById(`quick-talk-${k}`);
       if (el) el.value = '';
     });
@@ -301,6 +307,8 @@ window.openEditTalkModal = function(row) {
   if (t) t.value = row.dataset.title || '';
   const r = document.getElementById('quick-talk-room');
   if (r) r.value = row.dataset.room || '';
+  const sem = document.getElementById('quick-talk-speaker-email');
+  if (sem) sem.value = row.dataset.speakerEmail || '';
   const toLocalInputFormat = (isoString) => {
     if (!isoString) return '';
     const d = new Date(isoString);
@@ -396,6 +404,7 @@ window.submitQuickTalk = async function() {
   const room = rawRoom.trim() || null;
   const startVal = (document.getElementById('quick-talk-start') || {}).value || '';
   const endVal = (document.getElementById('quick-talk-end') || {}).value || '';
+  const speakerEmail = ((document.getElementById('quick-talk-speaker-email') || {}).value || '').trim();
   const btn = document.getElementById('btn-submit-quick-talk');
 
   if (!title) {
@@ -424,6 +433,11 @@ window.submitQuickTalk = async function() {
 
   try {
     const payload = editId ? { title, room } : { event_name: eventName, title, room };
+    if (speakerEmail) {
+      payload.speaker_email = speakerEmail;
+    } else if (editId) {
+      payload.speaker_email = null;
+    }
 
     if (!editId && eventId) {
       payload.event_id = eventId;
