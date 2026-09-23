@@ -94,6 +94,8 @@ def create_or_update_talk(
     if talk:
         talk.room = payload.room
         talk.end = payload.end
+        if payload.speaker_email is not None:
+            talk.speaker_email = payload.speaker_email
         db.commit()
         db.refresh(talk)
         response.status_code = status.HTTP_200_OK
@@ -105,6 +107,7 @@ def create_or_update_talk(
         room=payload.room,
         start=payload.start,
         end=payload.end,
+        speaker_email=payload.speaker_email,
         status="waiting_for_files",
     )
     db.add(talk)
@@ -128,6 +131,8 @@ def create_or_update_talk(
             raise
         talk.room = payload.room
         talk.end = payload.end
+        if payload.speaker_email is not None:
+            talk.speaker_email = payload.speaker_email
         db.commit()
         db.refresh(talk)
         response.status_code = status.HTTP_200_OK
@@ -215,7 +220,14 @@ def get_talk_jobs(
         .limit(10)
         .all()
     )
-    return {"status": talk.status, "jobs": jobs}
+    can_view_logs = (
+        user.is_machine or user.is_platform or user.role in ("organizer", "admin")
+    ) and user.role != "speaker"
+    job_reads = [schemas.JobRead.model_validate(j) for j in jobs]
+    if not can_view_logs:
+        for j in job_reads:
+            j.log_path = None
+    return {"status": talk.status, "jobs": job_reads}
 
 
 @router.post(
@@ -302,7 +314,7 @@ def approve_talk(
 ):
     """
     Approves or rejects a talk in pending_approval state.
-    - decision=approve (default): transitions to pending_bounds. Human must submit cut bounds next.
+    - decision=approve (default): transitions to pending_intro_outro.
     - decision=reject: transitions to rejected (terminal). No downstream jobs.
     Returns 404 if talk not found or not in caller's event_ids.
     Returns 409 if talk status is not 'pending_approval'.
@@ -330,28 +342,15 @@ def approve_talk(
     if decision == "reject":
         advance(talk, "rejected")
     else:
-        advance(talk, "pending_bounds")
+        advance(talk, "pending_intro_outro")
 
     db.commit()
     db.refresh(talk)
-
-    if decision != "reject":
-        client_id = user.client_id if (user and user.is_machine) else None
-        dispatch_talk_webhook("talk.bounds_pending", talk, db, client_id=client_id)
 
     if decision == "reject":
         cleanup_intermediates(storage, talk_id)
 
     return schemas.TalkRead.model_validate(talk)
-
-
-def _dispatch_talk_cut_webhook(
-    talk: models.Talk,
-    user: CurrentUser,
-    db: Session,
-) -> None:
-    client_id = user.client_id if (user and user.is_machine) else None
-    dispatch_talk_webhook("talk.bounds_pending", talk, db, client_id=client_id)
 
 
 RAW_PREVIEW_ALLOWED_STATES = frozenset(
@@ -436,7 +435,7 @@ def submit_cut_bounds(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Talk not found"
         )
-    if user.source == "sso":
+    if user.source == "sso" or user.role == "speaker":
         check_talk_access(talk, user, db)
     else:
         if user.role not in ("organizer", "admin") and not user.is_machine:
@@ -446,7 +445,7 @@ def submit_cut_bounds(
             )
         check_event_access(talk.event_id, user, db)
 
-    if talk.status != "pending_bounds":
+    if talk.status not in ("pending_bounds", "needs_work"):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"Cannot submit cut bounds for talk in status '{talk.status}'",
@@ -518,7 +517,7 @@ def upload_bumper_file(
 ):
     """Upload a custom bumper and return an opaque key understood by assembly."""
     talk = db.query(models.Talk).filter(models.Talk.id == talk_id).first()
-    if not talk or (user.is_machine and talk.event_id not in user.event_ids):
+    if not talk or (user.is_machine and not user.has_event_access(talk.event_id)):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Talk not found"
         )
@@ -564,6 +563,98 @@ def upload_bumper_file(
         "path": f"bumpers/{staged_path.name}",
         "filename": file.filename,
     }
+
+
+def _apply_intro_outro_config(
+    talk: models.Talk,
+    payload: schemas.IntroOutroRequest,
+    storage: StorageBackend,
+) -> None:
+    for kind, inc, src, path in [
+        (
+            "intro",
+            payload.include_intro,
+            payload.intro_source,
+            payload.custom_intro_path,
+        ),
+        (
+            "outro",
+            payload.include_outro,
+            payload.outro_source,
+            payload.custom_outro_path,
+        ),
+    ]:
+        if inc and src == "custom":
+            try:
+                stage_custom_clip(talk.id, path, kind, storage)
+            except IngestPathRejectedError as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"{kind.title()} clip rejected: {exc}",
+                ) from exc
+
+    talk.include_intro = payload.include_intro
+    talk.include_outro = payload.include_outro
+    talk.intro_source = payload.intro_source if payload.include_intro else None
+    talk.outro_source = payload.outro_source if payload.include_outro else None
+    talk.custom_intro_path = (
+        payload.custom_intro_path
+        if payload.include_intro and payload.intro_source == "custom"
+        else None
+    )
+    talk.custom_outro_path = (
+        payload.custom_outro_path
+        if payload.include_outro and payload.outro_source == "custom"
+        else None
+    )
+
+
+@router.post(
+    "/{talk_id}/handoff",
+    response_model=schemas.TalkRead,
+    status_code=status.HTTP_200_OK,
+)
+def handoff_talk(
+    talk_id: int,
+    payload: schemas.IntroOutroRequest,
+    user: Annotated[CurrentUser, Depends(require_role("organizer"))],
+    db: Annotated[Session, Depends(get_db)],
+    storage: Annotated[StorageBackend, Depends(get_storage_backend)],
+):
+    """
+    Configures intro and outro bumpers and hands off talk to speaker.
+    Advances talk from 'pending_intro_outro' to 'pending_bounds'.
+    """
+    talk = (
+        db.query(models.Talk)
+        .filter(models.Talk.id == talk_id)
+        .with_for_update()
+        .first()
+    )
+    if not talk or (user.is_machine and not user.has_event_access(talk.event_id)):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Talk not found"
+        )
+    check_event_access(talk.event_id, user, db)
+
+    if talk.status != "pending_intro_outro":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Cannot handoff talk in status '{talk.status}'; talk must be in 'pending_intro_outro'",
+        )
+
+    _apply_intro_outro_config(talk, payload, storage)
+    if payload.speaker_email is not None:
+        talk.speaker_email = payload.speaker_email.strip() or None
+
+    advance(talk, "pending_bounds")
+    db.commit()
+    db.refresh(talk)
+
+    client_id = user.client_id if (user and user.is_machine) else None
+    dispatch_talk_webhook("talk.bounds_pending", talk, db, client_id=client_id)
+
+    return schemas.TalkRead.model_validate(talk)
 
 
 @router.post(
@@ -618,39 +709,7 @@ def configure_assembly(
             detail="No cut recording found for talk",
         )
 
-    # Validate and stage custom clips before any DB mutation
-    if payload.include_intro and payload.intro_source == "custom":
-        try:
-            stage_custom_clip(talk.id, payload.custom_intro_path, "intro", storage)
-        except IngestPathRejectedError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Intro clip rejected: {exc}",
-            ) from exc
-
-    if payload.include_outro and payload.outro_source == "custom":
-        try:
-            stage_custom_clip(talk.id, payload.custom_outro_path, "outro", storage)
-        except IngestPathRejectedError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Outro clip rejected: {exc}",
-            ) from exc
-
-    talk.include_intro = payload.include_intro
-    talk.include_outro = payload.include_outro
-    talk.intro_source = payload.intro_source if payload.include_intro else None
-    talk.outro_source = payload.outro_source if payload.include_outro else None
-    talk.custom_intro_path = (
-        payload.custom_intro_path
-        if payload.include_intro and payload.intro_source == "custom"
-        else None
-    )
-    talk.custom_outro_path = (
-        payload.custom_outro_path
-        if payload.include_outro and payload.outro_source == "custom"
-        else None
-    )
+    _apply_intro_outro_config(talk, payload, storage)
 
     advance(talk, "assembling")
     db.commit()
@@ -863,11 +922,12 @@ def update_talk(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Talk end time must be after start time",
         )
-
     if "start" in update_data:
         talk.start = new_start
     if "end" in update_data:
         talk.end = new_end
+    if "speaker_email" in update_data:
+        talk.speaker_email = payload.speaker_email if payload.speaker_email else None
 
     try:
         db.commit()
@@ -1190,6 +1250,12 @@ async def import_schedule(
             for day in conf.get("days", []):
                 for room_name, room_talks in day.get("rooms", {}).items():
                     for t in room_talks:
+                        speaker_email = t.get("speaker_email")
+                        if not speaker_email and isinstance(t.get("persons"), list):
+                            for p in t["persons"]:
+                                if isinstance(p, dict) and p.get("email"):
+                                    speaker_email = p["email"]
+                                    break
                         talks_to_create.append(
                             {
                                 "title": t.get("title", "Untitled Session"),
@@ -1197,6 +1263,7 @@ async def import_schedule(
                                 "start": t.get("date") or t.get("start"),
                                 "end": t.get("end"),
                                 "duration": t.get("duration"),
+                                "speaker_email": speaker_email,
                                 "external_id": str(
                                     t.get("code")
                                     or t.get("id")
@@ -1311,6 +1378,7 @@ async def import_schedule(
                 "room": room,
                 "start": start_dt,
                 "end": end_dt,
+                "speaker_email": t_info.get("speaker_email"),
                 "external_id": talk_external_id,
             }
         )
@@ -1536,6 +1604,8 @@ async def import_schedule(
             existing.room = v_talk["room"]
             existing.start = v_talk["start"]
             existing.end = v_talk["end"]
+            if v_talk.get("speaker_email"):
+                existing.speaker_email = v_talk["speaker_email"]
             if ext_id and not existing.external_id:
                 existing.external_id = ext_id
             imported_count += 1
@@ -1548,6 +1618,7 @@ async def import_schedule(
             room=v_talk["room"],
             start=v_talk["start"],
             end=v_talk["end"],
+            speaker_email=v_talk.get("speaker_email"),
             status="waiting_for_files",
         )
         db.add(talk)

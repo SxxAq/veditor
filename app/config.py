@@ -49,6 +49,7 @@ class Settings(BaseSettings):
     ingest_roots: list[Path] = []
     preview_presets: dict[str, PreviewPreset] = PREVIEW_PRESETS
     disk_guard_multiplier: float = 3.0
+    retention_sweep_interval_seconds: int = 3600
     max_bumper_upload_size_bytes: PositiveInt = 100 * 1024 * 1024
 
     environment: str = "development"
@@ -75,6 +76,14 @@ class Settings(BaseSettings):
             raise ValueError("SESSION_SECRET must be at least 32 bytes long")
         return value
 
+    @field_validator("base_url", mode="after")
+    @classmethod
+    def validate_base_url(cls, value: str) -> str:
+        value = value.strip().rstrip("/")
+        if value and not value.startswith(("http://", "https://")):
+            raise ValueError("base_url must be an absolute HTTP or HTTPS URL")
+        return value
+
     @field_validator(
         "session_token_expire_hours",
         "access_token_expire_seconds",
@@ -85,6 +94,13 @@ class Settings(BaseSettings):
     def validate_token_expirations(cls, value: int) -> int:
         if value <= 0:
             raise ValueError("token expiration values must be positive")
+        return value
+
+    @field_validator("retention_sweep_interval_seconds", mode="after")
+    @classmethod
+    def validate_retention_sweep_interval_seconds(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("retention_sweep_interval_seconds must be positive")
         return value
 
     @field_validator("disk_guard_multiplier", mode="after")

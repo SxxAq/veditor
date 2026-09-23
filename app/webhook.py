@@ -15,14 +15,19 @@ from app.tasks import job_deliver_webhook
 logger = logging.getLogger(__name__)
 
 
+def _matches_event(client: models.Client, event_id: int) -> bool:
+    return bool(getattr(client, "is_platform", False)) or (
+        isinstance(getattr(client, "event_ids", None), list)
+        and event_id in client.event_ids
+    )
+
+
 def get_candidate_clients(
     db: Session,
     event_id: int,
     client_id: int | None = None,
 ) -> list[models.Client]:
     """Find all clients configured to receive webhooks for event_id or matching client_id."""
-    candidates: list[models.Client] = []
-
     try:
         candidates = (
             db.query(models.Client)
@@ -35,32 +40,13 @@ def get_candidate_clients(
             )
             .all()
         )
-        candidates = [
-            c
-            for c in candidates
-            if getattr(c, "is_platform", False)
-            or (
-                isinstance(getattr(c, "event_ids", None), list)
-                and event_id in c.event_ids
-            )
-        ]
     except Exception:  # noqa: BLE001
         # Dialect fallback (e.g. SQLite tests without postgres ARRAY support)
-        candidates = []
-
-    if not candidates:
-        all_clients = (
+        candidates = (
             db.query(models.Client).filter(models.Client.webhook_url.is_not(None)).all()
         )
-        candidates = [
-            c
-            for c in all_clients
-            if getattr(c, "is_platform", False)
-            or (
-                isinstance(getattr(c, "event_ids", None), list)
-                and event_id in c.event_ids
-            )
-        ]
+
+    candidates = [c for c in candidates if _matches_event(c, event_id)]
 
     seen_ids = {c.id for c in candidates}
 

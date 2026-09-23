@@ -10,9 +10,11 @@
     <span class="badge badge-waiting"><span class="badge-dot"></span>Waiting for files</span>
   {% elif status == 'detecting' %}
     <span class="badge badge-processing"><span class="spinner spinner-sm"></span>Detecting</span>
+  {% elif status == 'pending_intro_outro' %}
+    <span class="badge badge-pending"><span class="badge-dot"></span>Pending Bumpers</span>
   {% elif status in ['pending_approval', 'pending_bounds'] %}
     <span class="badge badge-pending"><span class="badge-dot"></span>Pending Review</span>
-  {% elif status in ['cutting', 'generating_previews', 'transcoding', 'uploading'] %}
+  {% elif status in ['cutting', 'generating_previews', 'assembling', 'transcoding', 'uploading'] %}
     <span class="badge badge-processing"><span class="spinner spinner-sm"></span>{{ status | replace('_', ' ') | title }}</span>
   {% elif status == 'preview' %}
     <span class="badge badge-preview"><span class="badge-dot"></span>Preview Ready</span>
@@ -28,6 +30,7 @@
 {% endmacro %}
 
 {% block content %}
+{% set can_manage = (user and user.role in ['organizer', 'admin'] and not user.is_sso) or (user is none) %}
 <div class="page-body">
 
   {% if error %}
@@ -105,7 +108,7 @@
   </div>
 
   <!-- Bulk Actions Bar -->
-  {% if user and user.role in ['organizer', 'admin'] and not user.is_sso %}
+  {% if can_manage %}
   <div id="bulk-actions-bar">
     <div class="bulk-actions-info">
       <span id="selected-count-text">0 talks selected</span>
@@ -128,13 +131,13 @@
         <span class="table-count table-count-spaced">{{ talks | length }} result{% if talks | length != 1 %}s{% endif %}</span>
       </div>
       <div class="table-header-actions">
-        {% if user and user.role in ['organizer', 'admin'] and not user.is_sso %}
+        {% if user and can_manage %}
         <a href="/studio/events" class="btn btn-ghost btn-sm" id="btn-events-link">
           <svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
           Events
         </a>
         {% endif %}
-        {% if user and user.role in ['organizer', 'admin'] and not user.is_sso %}
+        {% if can_manage %}
         <button class="btn btn-ghost btn-sm" id="btn-open-import">
           <svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
           Import Schedule
@@ -155,7 +158,7 @@
     <table>
       <thead>
         <tr>
-          {% if user and user.role in ['organizer', 'admin'] and not user.is_sso %}
+          {% if can_manage %}
           <th class="col-checkbox">
             <input type="checkbox" id="select-all-talks" title="Select all talks">
           </th>
@@ -170,8 +173,8 @@
       </thead>
       <tbody>
         {% for talk in talks %}
-        <tr data-talk-id="{{ talk.id }}" data-status="{{ talk.status }}" data-title="{{ (talk.title or '') | e }}" data-room="{{ (talk.room or '') | e }}" data-start="{{ talk.start.isoformat() if talk.start else '' }}" data-end="{{ talk.end.isoformat() if talk.end else '' }}">
-          {% if user and user.role in ['organizer', 'admin'] and not user.is_sso %}
+        <tr data-talk-id="{{ talk.id }}" data-status="{{ talk.status }}" data-title="{{ (talk.title or '') | e }}" data-room="{{ (talk.room or '') | e }}" data-start="{{ talk.start.isoformat() if talk.start else '' }}" data-end="{{ talk.end.isoformat() if talk.end else '' }}" data-speaker-email="{{ (talk.speaker_email or '') | e }}">
+          {% if can_manage %}
           <td class="col-checkbox">
             <input type="checkbox" class="talk-checkbox" value="{{ talk.id }}">
           </td>
@@ -216,7 +219,7 @@
               <a href="/studio/talks/{{ talk.id }}" class="btn btn-ghost btn-sm">
                 Open Studio
               </a>
-              {% if user and user.role in ['organizer', 'admin'] and not user.is_sso %}
+              {% if can_manage %}
               <button class="btn btn-ghost btn-sm btn-edit-talk" data-talk-id="{{ talk.id }}" title="Edit Talk">
                 <svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
               </button>
@@ -229,7 +232,7 @@
         </tr>
         {% endfor %}
         <tr id="no-client-matches-row">
-          <td colspan="{% if user and user.is_sso %}6{% else %}7{% endif %}" class="no-matches-cell">
+          <td colspan="{% if can_manage %}7{% else %}6{% endif %}" class="no-matches-cell">
             <div class="no-matches-title">No matching talks</div>
             <div class="no-matches-desc">No talks match the active search or filter.</div>
           </td>
@@ -244,7 +247,9 @@
         <a href="/studio" class="btn btn-ghost btn-sm empty-state-btn">Clear Filters</a>
       {% else %}
         <p class="empty-state-title">No talks in workspace</p>
+        {% if can_manage %}
         <p class="empty-state-hint">Use the buttons above to import a conference schedule or add a talk.</p>
+        {% endif %}
       {% endif %}
     </div>
     {% endif %}
@@ -252,7 +257,7 @@
 
 </div>
 
-{% if user and user.role in ['organizer', 'admin'] and not user.is_sso %}
+{% if can_manage %}
 <!-- ── MODAL: Import Schedule ────────────────────────────────────── -->
 <div id="modal-import" class="dashboard-modal-backdrop">
   <div class="dashboard-modal-card modal-import-card">
@@ -349,6 +354,11 @@
     <div class="dashboard-modal-field-sm">
       <label class="dashboard-modal-label dashboard-modal-label-tight" for="quick-talk-room">Room</label>
       <input type="text" id="quick-talk-room" class="input-field" value="Auditorium A">
+    </div>
+
+    <div class="dashboard-modal-field-sm">
+      <label class="dashboard-modal-label dashboard-modal-label-tight">Attach Speaker (Email)</label>
+      <input type="email" id="quick-talk-speaker-email" class="input-field" placeholder="speaker@example.com">
     </div>
 
     <div class="dashboard-modal-grid-2">

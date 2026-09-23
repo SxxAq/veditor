@@ -424,6 +424,62 @@ def test_approve_talk_triggers_bounds_pending_webhook():
                 headers={"X-API-Key": "valid_key"},
             )
             assert resp.status_code == 200
+            assert resp.json()["status"] == "pending_intro_outro"
+            assert mock_talk.status == "pending_intro_outro"
+            mock_enqueue.assert_not_called()
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_intro_outro_handoff_triggers_bounds_pending_webhook():
+    """Handoff from pending_intro_outro to pending_bounds dispatches talk.bounds_pending."""
+    mock_db = MagicMock()
+    mock_client = models.Client(
+        id=1,
+        event_ids=[1],
+        webhook_url="https://subscriber.example/hook",
+        webhook_secret="sub-secret-key",
+    )
+    mock_talk = models.Talk(
+        id=10,
+        event_id=1,
+        external_id="TALK_10_EXT",
+        title="Keynote Talk",
+        room="Main Hall",
+        start=datetime.now(UTC),
+        end=datetime.now(UTC),
+        status="pending_intro_outro",
+    )
+
+    mock_event = models.Event(id=1, name="Test Event")
+
+    def mock_query(model):
+        q = MagicMock()
+        if model is models.Talk:
+            q.filter.return_value.first.return_value = mock_talk
+            q.filter.return_value.with_for_update.return_value = q.filter.return_value
+        elif model is models.Client:
+            q.filter.return_value.all.return_value = [mock_client]
+            q.filter.return_value.first.return_value = mock_client
+        elif model is models.Event:
+            q.filter.return_value.first.return_value = mock_event
+        return q
+
+    mock_db.query = mock_query
+
+    fake_storage = FakeStorageBackend()
+    app.dependency_overrides[get_client] = lambda: mock_client
+    app.dependency_overrides[get_db] = lambda: mock_db
+    app.dependency_overrides[get_storage_backend] = lambda: fake_storage
+
+    try:
+        with patch("app.webhook.light_queue.enqueue") as mock_enqueue:
+            resp = client.post(
+                "/talks/10/handoff",
+                json={"include_intro": False, "include_outro": False},
+                headers={"X-API-Key": "valid_key"},
+            )
+            assert resp.status_code == 200
             assert resp.json()["status"] == "pending_bounds"
             assert mock_talk.status == "pending_bounds"
 
@@ -487,7 +543,7 @@ def test_approve_talk_silent_when_no_webhook_url():
                 headers={"X-API-Key": "valid_key"},
             )
             assert resp.status_code == 200
-            assert resp.json()["status"] == "pending_bounds"
+            assert resp.json()["status"] == "pending_intro_outro"
             mock_enqueue.assert_not_called()
     finally:
         app.dependency_overrides.clear()
