@@ -584,13 +584,17 @@ def get_talk_media_categorized(
     if safe_category not in ALLOWED_MEDIA_CATEGORIES:
         raise HTTPException(status_code=404, detail="Media not found")
 
-    talk = db.query(models.Talk).filter(models.Talk.id == talk_id).first()
-    if not talk:
-        raise HTTPException(status_code=404, detail="Media not found")
-
+    talk = None
     # Final published media on completed talks is public for agendas and webhook consumers.
+    if safe_category == "final":
+        talk = (
+            db.query(models.Talk)
+            .filter(models.Talk.id == talk_id, models.Talk.status == "done")
+            .first()
+        )
+
     # All other categories and non-done states require studio authentication.
-    if not (safe_category == "final" and talk.status == "done"):
+    if not talk:
         talk = _authorize_studio_talk(
             talk_id, request, db, not_found_detail="Media not found"
         )

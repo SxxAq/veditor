@@ -379,8 +379,8 @@ def test_submit_cut_bounds_does_not_prematurely_trigger_webhook():
         app.dependency_overrides.clear()
 
 
-def test_approve_talk_triggers_bounds_pending_webhook():
-    """Approving a talk transitions it to pending_bounds and dispatches talk.bounds_pending."""
+def test_approve_talk_does_not_dispatch_webhook():
+    """Approving a talk transitions it to pending_intro_outro and does not dispatch a webhook."""
     mock_db = MagicMock()
     mock_client = models.Client(
         id=1,
