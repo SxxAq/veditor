@@ -418,16 +418,16 @@ def test_media_serving(client: TestClient, db_session, temp_storage, tmp_path):
             f"/studio/media/{talk.id}/preview.mp4", headers={"X-API-Key": api_key}
         )
         assert response.status_code == 200
-        assert response.headers.get("cache-control") == "no-store"
+        assert response.headers.get("cache-control") == "no-cache"
         assert "video/mp4" in response.headers.get("content-type", "")
 
-        # Categorized media route also includes no-store
+        # Categorized media route also includes no-cache
         response_cat = client.get(
             f"/studio/media/{talk.id}/preview/preview.mp4",
             headers={"X-API-Key": api_key},
         )
         assert response_cat.status_code == 200
-        assert response_cat.headers.get("cache-control") == "no-store"
+        assert response_cat.headers.get("cache-control") == "no-cache"
 
         not_found = client.get(
             f"/studio/media/{talk.id}/missing.mp4", headers={"X-API-Key": api_key}
@@ -450,7 +450,7 @@ def test_media_serving(client: TestClient, db_session, temp_storage, tmp_path):
         temp_storage.put(f"{talk.id}/final/final.mp4", clip)
         public_resp = client.get(f"/studio/media/{talk.id}/final/final.mp4")
         assert public_resp.status_code == 200
-        assert public_resp.headers.get("cache-control") == "no-store"
+        assert public_resp.headers.get("cache-control") == "no-cache"
     finally:
         clip.unlink(missing_ok=True)
 
