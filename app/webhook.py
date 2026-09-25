@@ -28,7 +28,8 @@ def get_candidate_clients(
     client_id: int | None = None,
 ) -> list[models.Client]:
     """Find all clients configured to receive webhooks for event_id or matching client_id."""
-    try:
+    bind = db.get_bind()
+    if bind is not None and bind.dialect.name == "postgresql":
         candidates = (
             db.query(models.Client)
             .filter(
@@ -40,7 +41,7 @@ def get_candidate_clients(
             )
             .all()
         )
-    except Exception:  # noqa: BLE001
+    else:
         # Dialect fallback (e.g. SQLite tests without postgres ARRAY support)
         candidates = (
             db.query(models.Client).filter(models.Client.webhook_url.is_not(None)).all()
@@ -59,7 +60,7 @@ def get_candidate_clients(
             )
             .first()
         )
-        if client_record:
+        if client_record and _matches_event(client_record, event_id):
             candidates.append(client_record)
             seen_ids.add(client_record.id)
 

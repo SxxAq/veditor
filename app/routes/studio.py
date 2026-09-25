@@ -592,6 +592,14 @@ def get_talk_media_categorized(
             .filter(models.Talk.id == talk_id, models.Talk.status == "done")
             .first()
         )
+        if not talk:
+            raw_sso = request.query_params.get("sso_token") or request.cookies.get(
+                "veditor_session"
+            )
+            user = _get_authenticated_user_from_cookie(request, db)
+            client = get_optional_ui_client(request, db)
+            if not raw_sso and not user and not client:
+                raise HTTPException(status_code=404, detail="Media not found")
 
     # All other categories and non-done states require studio authentication.
     if not talk:

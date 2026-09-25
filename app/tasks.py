@@ -944,6 +944,11 @@ def job_publish(talk_id: int, final_key: str) -> None:
             else:
                 duration_seconds = round(float(duration_seconds), 2)
 
+            if not settings.base_url:
+                logger.warning(
+                    "settings.base_url is not configured; published video_url in webhook payload will be a relative path."
+                )
+
             base = settings.base_url.rstrip("/") if settings.base_url else ""
             filename = Path(final_key).name
             video_url = f"{base}/studio/media/{talk.id}/final/{filename}"

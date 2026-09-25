@@ -885,6 +885,7 @@ def test_candidate_clients_platform_and_event_matching():
         client_unrelated,
         client_no_secret,
     ]
+    mock_db.get_bind.return_value = None
 
     candidates = get_candidate_clients(mock_db, event_id=10)
     candidate_ids = {c.id for c in candidates}
@@ -892,6 +893,11 @@ def test_candidate_clients_platform_and_event_matching():
     assert 2 in candidate_ids
     assert 3 not in candidate_ids
     assert 4 not in candidate_ids  # Excluded because no secret
+
+    # Passing explicit client_id for unrelated event client should not include it
+    mock_db.query.return_value.filter.return_value.first.return_value = client_unrelated
+    candidates_with_unrelated = get_candidate_clients(mock_db, event_id=10, client_id=3)
+    assert 3 not in {c.id for c in candidates_with_unrelated}
 
 
 def test_multi_client_isolation_on_webhook_dispatch():

@@ -440,6 +440,10 @@ def test_media_serving(client: TestClient, db_session, temp_storage, tmp_path):
         )
         assert disallowed.status_code == 404
 
+        # Unauthenticated request for final media returns 404 when talk is not done or does not exist
+        assert client.get(f"/studio/media/{talk.id}/final/final.mp4").status_code == 404
+        assert client.get("/studio/media/999999/final/final.mp4").status_code == 404
+
         # Completed talk final media is publicly accessible without authentication
         talk.status = "done"
         db_session.commit()
