@@ -1,5 +1,5 @@
 from datetime import UTC, datetime
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -735,3 +735,343 @@ def test_create_event_api_key_multi_event_retains_other_events(mock_db):
     assert res.status_code == 201
     assert not mock_db.delete.called
     assert existing_c.event_ids == [2]
+
+
+# ── Outbound Webhook Tests ───────────────────────────────────────
+def test_get_event_webhook_none_configured(mock_db):
+    event = models.Event(id=1, name="Test Event", created_by_user_id=5)
+
+    def mock_query(model):
+        m = MagicMock()
+        if model == models.Event:
+            m.filter.return_value.first.return_value = event
+        elif model == models.Client:
+            m.filter.return_value.all.return_value = []
+        return m
+
+    mock_db.query.side_effect = mock_query
+    app.dependency_overrides[get_db] = lambda: mock_db
+    app.dependency_overrides[get_current_user] = lambda: CurrentUser(
+        user_id=5, role="organizer", source="jwt"
+    )
+
+    res = client.get("/events/1/webhook")
+    assert res.status_code == 200
+    data = res.json()
+    assert data["url"] is None
+    assert data["has_secret"] is False
+    assert data["masked_secret"] is None
+
+
+def test_get_event_webhook_configured(mock_db):
+    event = models.Event(id=1, name="Test Event", created_by_user_id=5)
+    c = models.Client(
+        id=101,
+        name="Event Client",
+        hashed_key="key_hash",
+        event_ids=[1],
+        webhook_url="https://subscriber.example.com/webhook",
+        webhook_secret="super-secret-key-12345",
+    )
+
+    def mock_query(model):
+        m = MagicMock()
+        if model == models.Event:
+            m.filter.return_value.first.return_value = event
+        elif model == models.Client:
+            m.filter.return_value.all.return_value = [c]
+        return m
+
+    mock_db.query.side_effect = mock_query
+    app.dependency_overrides[get_db] = lambda: mock_db
+    app.dependency_overrides[get_current_user] = lambda: CurrentUser(
+        user_id=5, role="organizer", source="jwt"
+    )
+
+    res = client.get("/events/1/webhook")
+    assert res.status_code == 200
+    data = res.json()
+    assert data["url"] == "https://subscriber.example.com/webhook"
+    assert data["has_secret"] is True
+    assert data["masked_secret"] == "supe...2345"
+
+
+def test_update_event_webhook_creates_client_and_persists(mock_db):
+    event = models.Event(id=1, name="Test Event", created_by_user_id=5)
+
+    def mock_query(model):
+        m = MagicMock()
+        if model == models.Event:
+            m.filter.return_value.first.return_value = event
+        elif model == models.Client:
+            m.filter.return_value.all.return_value = []
+        return m
+
+    mock_db.query.side_effect = mock_query
+    app.dependency_overrides[get_db] = lambda: mock_db
+    app.dependency_overrides[get_current_user] = lambda: CurrentUser(
+        user_id=5, role="organizer", source="jwt"
+    )
+
+    res = client.post(
+        "/events/1/webhook",
+        json={
+            "url": "https://subscriber.example.com/hook",
+            "secret": "my-custom-secret",
+        },
+    )
+    assert res.status_code == 200
+    data = res.json()
+    assert data["status"] == "registered"
+    assert data["url"] == "https://subscriber.example.com/hook"
+    assert data["secret"] == "my-custom-secret"
+    assert mock_db.add.called
+    assert mock_db.commit.called
+
+
+def test_update_event_webhook_generates_secret_if_omitted(mock_db):
+    event = models.Event(id=1, name="Test Event", created_by_user_id=5)
+    c = models.Client(
+        id=101,
+        name="Event Client",
+        hashed_key="key_hash",
+        event_ids=[1],
+        webhook_url=None,
+        webhook_secret=None,
+    )
+
+    def mock_query(model):
+        m = MagicMock()
+        if model == models.Event:
+            m.filter.return_value.first.return_value = event
+        elif model == models.Client:
+            m.filter.return_value.all.return_value = [c]
+        return m
+
+    mock_db.query.side_effect = mock_query
+    app.dependency_overrides[get_db] = lambda: mock_db
+    app.dependency_overrides[get_current_user] = lambda: CurrentUser(
+        user_id=5, role="organizer", source="jwt"
+    )
+
+    res = client.post(
+        "/events/1/webhook",
+        json={"url": "https://subscriber.example.com/hook"},
+    )
+    assert res.status_code == 200
+    data = res.json()
+    assert data["status"] == "registered"
+    assert data["url"] == "https://subscriber.example.com/hook"
+    assert len(data["secret"]) >= 32
+    assert c.webhook_url == "https://subscriber.example.com/hook"
+    assert c.webhook_secret == data["secret"]
+    assert mock_db.commit.called
+
+
+def test_update_event_webhook_forbidden_for_sso(mock_db):
+    event = models.Event(id=1, name="Test Event", created_by_user_id=5)
+    mock_db.query.return_value.filter.return_value.first.return_value = event
+    app.dependency_overrides[get_db] = lambda: mock_db
+    app.dependency_overrides[get_current_user] = lambda: CurrentUser(
+        role="organizer", source="sso", event_ids=[1]
+    )
+
+    res = client.post(
+        "/events/1/webhook",
+        json={"url": "https://subscriber.example.com/hook"},
+    )
+    assert res.status_code == 403
+    assert "SSO sessions are not permitted" in res.json()["detail"]
+
+
+def test_delete_event_webhook(mock_db):
+    event = models.Event(id=1, name="Test Event", created_by_user_id=5)
+    c = models.Client(
+        id=101,
+        name="Event Client",
+        hashed_key="key_hash",
+        event_ids=[1],
+        webhook_url="https://subscriber.example.com/hook",
+        webhook_secret="secret",
+    )
+
+    def mock_query(model):
+        m = MagicMock()
+        if model == models.Event:
+            m.filter.return_value.first.return_value = event
+        elif model == models.Client:
+            m.filter.return_value.all.return_value = [c]
+        return m
+
+    mock_db.query.side_effect = mock_query
+    app.dependency_overrides[get_db] = lambda: mock_db
+    app.dependency_overrides[get_current_user] = lambda: CurrentUser(
+        user_id=5, role="organizer", source="jwt"
+    )
+
+    res = client.delete("/events/1/webhook")
+    assert res.status_code == 204
+    assert c.webhook_url is None
+    assert c.webhook_secret is None
+    assert mock_db.commit.called
+
+
+def test_test_event_webhook_success_with_payload_args(mock_db):
+    event = models.Event(id=1, name="Test Event", created_by_user_id=5)
+
+    def mock_query(model):
+        m = MagicMock()
+        if model == models.Event:
+            m.filter.return_value.first.return_value = event
+        elif model == models.Client:
+            m.filter.return_value.all.return_value = []
+        return m
+
+    mock_db.query.side_effect = mock_query
+    app.dependency_overrides[get_db] = lambda: mock_db
+    app.dependency_overrides[get_current_user] = lambda: CurrentUser(
+        user_id=5, role="organizer", source="jwt"
+    )
+
+    mock_resp = MagicMock()
+    mock_resp.status = 200
+    mock_resp.__enter__.return_value = mock_resp
+
+    with patch(
+        "app.routes.events._webhook_opener.open", return_value=mock_resp
+    ) as mock_open:
+        res = client.post(
+            "/events/1/webhook/test",
+            json={
+                "url": "https://subscriber.example.com/hook",
+                "secret": "test-secret",
+            },
+        )
+        assert res.status_code == 200
+        data = res.json()
+        assert data["success"] is True
+        assert data["status_code"] == 200
+        assert "delivered successfully" in data["message"]
+        assert mock_open.called
+        req = mock_open.call_args[0][0]
+        assert req.get_header("X-veditor-signature").startswith("sha256=")
+
+
+def test_test_event_webhook_uses_stored_client_config(mock_db):
+    event = models.Event(id=1, name="Test Event", created_by_user_id=5)
+    c = models.Client(
+        id=101,
+        name="Event Client",
+        hashed_key="key_hash",
+        event_ids=[1],
+        webhook_url="https://stored.example.com/hook",
+        webhook_secret="stored-secret",
+    )
+
+    def mock_query(model):
+        m = MagicMock()
+        if model == models.Event:
+            m.filter.return_value.first.return_value = event
+        elif model == models.Client:
+            m.filter.return_value.all.return_value = [c]
+        return m
+
+    mock_db.query.side_effect = mock_query
+    app.dependency_overrides[get_db] = lambda: mock_db
+    app.dependency_overrides[get_current_user] = lambda: CurrentUser(
+        user_id=5, role="organizer", source="jwt"
+    )
+
+    mock_resp = MagicMock()
+    mock_resp.status = 204
+    mock_resp.__enter__.return_value = mock_resp
+
+    with patch(
+        "app.routes.events._webhook_opener.open", return_value=mock_resp
+    ) as mock_open:
+        res = client.post("/events/1/webhook/test", json={})
+        assert res.status_code == 200
+        data = res.json()
+        assert data["success"] is True
+        assert data["status_code"] == 204
+        req = mock_open.call_args[0][0]
+        assert req.full_url == "https://stored.example.com/hook"
+
+
+def test_test_event_webhook_http_error(mock_db):
+    import urllib.error
+
+    event = models.Event(id=1, name="Test Event", created_by_user_id=5)
+    mock_db.query.return_value.filter.return_value.first.return_value = event
+    mock_db.query.return_value.filter.return_value.all.return_value = []
+    app.dependency_overrides[get_db] = lambda: mock_db
+    app.dependency_overrides[get_current_user] = lambda: CurrentUser(
+        user_id=5, role="organizer", source="jwt"
+    )
+
+    http_error = urllib.error.HTTPError(
+        url="https://subscriber.example.com/hook",
+        code=404,
+        msg="Not Found",
+        hdrs={},
+        fp=None,
+    )
+
+    with patch("app.routes.events._webhook_opener.open", side_effect=http_error):
+        res = client.post(
+            "/events/1/webhook/test",
+            json={
+                "url": "https://subscriber.example.com/hook",
+                "secret": "test-secret",
+            },
+        )
+        assert res.status_code == 200
+        data = res.json()
+        assert data["success"] is False
+        assert data["status_code"] == 404
+        assert "404: Not Found" in data["message"]
+
+
+def test_test_event_webhook_connection_error(mock_db):
+    import urllib.error
+
+    event = models.Event(id=1, name="Test Event", created_by_user_id=5)
+    mock_db.query.return_value.filter.return_value.first.return_value = event
+    mock_db.query.return_value.filter.return_value.all.return_value = []
+    app.dependency_overrides[get_db] = lambda: mock_db
+    app.dependency_overrides[get_current_user] = lambda: CurrentUser(
+        user_id=5, role="organizer", source="jwt"
+    )
+
+    url_error = urllib.error.URLError(reason="Connection refused")
+
+    with patch("app.routes.events._webhook_opener.open", side_effect=url_error):
+        res = client.post(
+            "/events/1/webhook/test",
+            json={
+                "url": "https://subscriber.example.com/hook",
+                "secret": "test-secret",
+            },
+        )
+        assert res.status_code == 200
+        data = res.json()
+        assert data["success"] is False
+        assert data["status_code"] is None
+        assert "Connection failed: Connection refused" in data["message"]
+
+
+def test_test_event_webhook_missing_url_raises_400(mock_db):
+    event = models.Event(id=1, name="Test Event", created_by_user_id=5)
+    mock_db.query.return_value.filter.return_value.first.return_value = event
+    mock_db.query.return_value.filter.return_value.all.return_value = []
+    app.dependency_overrides[get_db] = lambda: mock_db
+    app.dependency_overrides[get_current_user] = lambda: CurrentUser(
+        user_id=5, role="organizer", source="jwt"
+    )
+
+    res = client.post(
+        "/events/1/webhook/test",
+        json={"secret": "secret-without-url"},
+    )
+    assert res.status_code == 400
+    assert "No webhook URL provided or configured" in res.json()["detail"]
