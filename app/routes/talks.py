@@ -1848,7 +1848,9 @@ async def attach_room_recording(
             .filter(models.Talk.room == room)
             .distinct()
         )
-        if user.source in ("api_key", "sso"):
+        if user.is_platform or user.is_human_admin:
+            pass
+        elif user.source in ("api_key", "sso"):
             query = query.filter(models.Event.id.in_(user.event_ids))
         elif user.role != "admin":
             query = query.filter(models.Event.created_by_user_id == user.user_id)
@@ -2053,11 +2055,17 @@ async def attach_room_recording(
     # Zero-copy stage into each talk's storage & advance state
     talk_ids = []
     staged_keys = []
+    replaced_backups: dict[str, str] = {}
+    talks_to_cancel = [t.id for t in matched_talks if t.status == "detecting"]
+
     try:
         for talk in matched_talks:
-            if talk.status == "detecting":
-                _cancel_talk_jobs(talk.id)
             raw_key = f"{talk.id}/raw/raw.mp4"
+            if storage.exists(raw_key):
+                backup_key = f"{raw_key}.orig_{uuid.uuid4().hex}"
+                storage.link_or_copy(backup_key, storage.get(raw_key))
+                replaced_backups[raw_key] = backup_key
+
             storage.link_or_copy(raw_key, staged_path)
             staged_keys.append(raw_key)
 
@@ -2075,18 +2083,46 @@ async def attach_room_recording(
             talk_ids.append(talk.id)
 
         db.commit()
+
+        # Success: clean up temporary backup files
+        for b_key in replaced_backups.values():
+            try:
+                storage.delete(b_key)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("Failed removing backup %s: %s", b_key, exc)
     except Exception:
         db.rollback()
         for key in staged_keys:
-            try:
-                storage.delete(key)
-            except Exception as exc:  # noqa: BLE001
-                logger.debug("Failed cleaning up staged key %s: %s", key, exc)
+            if key in replaced_backups:
+                b_key = replaced_backups[key]
+                try:
+                    storage.link_or_copy(key, storage.get(b_key))
+                    storage.delete(b_key)
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug(
+                        "Failed restoring %s from backup %s: %s", key, b_key, exc
+                    )
+            else:
+                try:
+                    storage.delete(key)
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("Failed cleaning up staged key %s: %s", key, exc)
+
+        for raw_k, b_key in replaced_backups.items():
+            if raw_k not in staged_keys:
+                try:
+                    storage.delete(b_key)
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("Failed deleting dangling backup %s: %s", b_key, exc)
         raise
     finally:
         if is_ephemeral_upload:
             # storage-boundary-exempt: upload staging cleanup
             staged_path.unlink(missing_ok=True)
+
+    # Cancel previous detection jobs now that commit succeeded
+    for tid in talks_to_cancel:
+        _cancel_talk_jobs(tid)
 
     # Enqueue detection jobs on the light queue
     for tid in talk_ids:

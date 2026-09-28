@@ -3077,3 +3077,126 @@ def test_attach_room_recording_staging_failure_cleans_up(
         assert t1.status == "waiting_for_files"
     finally:
         clip.unlink(missing_ok=True)
+
+
+def test_attach_room_recording_platform_client_discovery_without_event_id(
+    client: TestClient, db_session, tmp_path
+):
+    from app.auth import CurrentUser, get_current_user
+    from app.main import app
+
+    event = models.Event(
+        name="Platform Room Event",
+    )
+    db_session.add(event)
+    db_session.commit()
+
+    now = datetime(2026, 9, 25, 9, 0, 0, tzinfo=UTC)
+    talk = models.Talk(
+        event_id=event.id,
+        title="Platform Talk",
+        room="Hall Platform",
+        start=now,
+        end=now + timedelta(minutes=30),
+        status="waiting_for_files",
+    )
+    db_session.add(talk)
+    db_session.commit()
+
+    # Platform client has empty event_ids but is_platform=True
+    app.dependency_overrides[get_current_user] = lambda: CurrentUser(
+        user_id=1,
+        role="admin",
+        source="api_key",
+        event_ids=[],
+        is_platform=True,
+    )
+
+    clip = generate_clip(0.5, output_dir=tmp_path)
+    try:
+        with patch("app.routes.talks.light_queue"), open(clip, "rb") as f_vid:
+            res = client.post(
+                "/talks/room/attach-recording",
+                data={"room": "Hall Platform"},
+                files={"file": ("clip.mp4", f_vid, "video/mp4")},
+            )
+            assert res.status_code == 200
+            assert res.json()["attached_count"] == 1
+    finally:
+        app.dependency_overrides.pop(get_current_user, None)
+        clip.unlink(missing_ok=True)
+
+
+def test_attach_room_recording_staging_failure_restores_existing_raw(
+    client: TestClient, db_session, temp_storage, tmp_path
+):
+    import pytest
+
+    event = models.Event(name="Restore Event")
+    db_session.add(event)
+    db_session.commit()
+
+    api_key = f"key_{uuid.uuid4().hex}"
+    client_model = models.Client(hashed_key=hash_api_key(api_key), event_ids=[event.id])
+    db_session.add(client_model)
+    db_session.commit()
+
+    now = datetime(2026, 9, 25, 9, 0, 0, tzinfo=UTC)
+    t1 = models.Talk(
+        event_id=event.id,
+        title="Talk 1 Already Detecting",
+        room="Restore Room",
+        start=now,
+        end=now + timedelta(minutes=30),
+        status="detecting",
+    )
+    t2 = models.Talk(
+        event_id=event.id,
+        title="Talk 2",
+        room="Restore Room",
+        start=now + timedelta(minutes=30),
+        end=now + timedelta(minutes=60),
+        status="waiting_for_files",
+    )
+    db_session.add(t1)
+    db_session.add(t2)
+    db_session.commit()
+
+    # Seed existing raw file for Talk 1
+    t1_orig_bytes = b"original existing raw content for talk 1"
+    temp_storage.put(f"{t1.id}/raw/raw.mp4", t1_orig_bytes)
+
+    real_link_or_copy = temp_storage.link_or_copy
+    calls = []
+
+    def mock_link_or_copy(key, source):
+        calls.append(key)
+        # Fail when staging talk 2
+        if key == f"{t2.id}/raw/raw.mp4":
+            raise RuntimeError("Simulated failure on talk 2")
+        return real_link_or_copy(key, source)
+
+    clip = generate_clip(0.5, output_dir=tmp_path)
+    try:
+        with (
+            pytest.raises(RuntimeError),
+            patch.object(temp_storage, "link_or_copy", side_effect=mock_link_or_copy),
+            patch("app.routes.talks._cancel_talk_jobs") as mock_cancel,
+            open(clip, "rb") as f_vid,
+        ):
+            client.post(
+                "/talks/room/attach-recording",
+                data={"room": "Restore Room", "event_id": str(event.id)},
+                files={"file": ("clip.mp4", f_vid, "video/mp4")},
+                headers={"X-API-Key": api_key},
+            )
+
+        # Talk 1 original raw file must be preserved / restored!
+        assert temp_storage.exists(f"{t1.id}/raw/raw.mp4")
+        assert temp_storage.get(f"{t1.id}/raw/raw.mp4").read_bytes() == t1_orig_bytes
+        # Talk 2 raw file should not exist
+        assert not temp_storage.exists(f"{t2.id}/raw/raw.mp4")
+        # _cancel_talk_jobs should NOT have been called because staging failed before commit
+        mock_cancel.assert_not_called()
+    finally:
+        clip.unlink(missing_ok=True)
