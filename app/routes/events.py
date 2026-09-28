@@ -246,7 +246,12 @@ def _get_event_client(event_id: int, db: Session) -> models.Client | None:
         .all()
     )
     matching = [c for c in clients if event_id in (c.event_ids or [])]
-    return matching[0] if matching else None
+    if not matching:
+        return None
+    for c in matching:
+        if c.webhook_url:
+            return c
+    return matching[0]
 
 
 @router.get(
@@ -335,9 +340,15 @@ def create_event_api_key(
     # Preserve existing webhook config if not explicitly provided
     if existing_clients:
         if not webhook_url:
-            webhook_url = existing_clients[0].webhook_url
+            for c in existing_clients:
+                if c.webhook_url:
+                    webhook_url = c.webhook_url
+                    break
         if not webhook_secret:
-            webhook_secret = existing_clients[0].webhook_secret
+            for c in existing_clients:
+                if c.webhook_secret:
+                    webhook_secret = c.webhook_secret
+                    break
 
     for existing_c in existing_clients:
         remaining = [eid for eid in (existing_c.event_ids or []) if eid != event_id]

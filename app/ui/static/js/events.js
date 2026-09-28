@@ -234,19 +234,23 @@ document.addEventListener('DOMContentLoaded', () => {
     webhookStatusBadge.className = `badge badge-${type}`;
   }
 
+  let webhookLoadGeneration = 0;
+
   async function loadWebhook(eventId) {
     hideWebhookAlert();
     if (!webhookUrlInput || !webhookSecretInput) return;
 
+    const currentGen = ++webhookLoadGeneration;
+
     try {
       const resp = await fetch(`/events/${eventId}/webhook`);
-      if (currentActiveEventId !== eventId) return;
+      if (currentActiveEventId !== eventId || currentGen !== webhookLoadGeneration) return;
       if (!resp.ok) {
         setWebhookBadge('Error', 'neutral');
         return;
       }
       const data = await resp.json();
-      if (currentActiveEventId !== eventId) return;
+      if (currentActiveEventId !== eventId || currentGen !== webhookLoadGeneration) return;
       if (data.url) {
         webhookUrlInput.value = data.url;
         if (data.has_secret) {
