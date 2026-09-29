@@ -385,7 +385,7 @@ class UserRead(BaseModel):
 
 
 class UserPromoteRequest(BaseModel):
-    role: Literal["user", "organizer", "speaker", "admin"]
+    role: Literal["user", "organizer"]
 
 
 class EventSSOTokenRequest(BaseModel):
