@@ -672,6 +672,7 @@ def test_talk_upload_recording(client: TestClient, db_session, temp_storage, tmp
     try:
         with (
             patch("app.routes.talks.light_queue") as mq,
+            patch("app.routes.talks.container_duration_seconds", return_value=5400.0),
             open(clip, "rb") as f_vid,
         ):
             mock_queue = mq
@@ -743,6 +744,7 @@ def test_talk_upload_recording_with_ingest_roots(
     try:
         with (
             patch("app.routes.talks.light_queue") as mq,
+            patch("app.routes.talks.container_duration_seconds", return_value=5400.0),
             open(clip, "rb") as f_vid,
         ):
             mock_queue = mq
@@ -2692,6 +2694,7 @@ def test_attach_room_recording_multi_talk(
     try:
         with (
             patch("app.routes.talks.light_queue") as mq,
+            patch("app.routes.talks.container_duration_seconds", return_value=5400.0),
             open(clip, "rb") as f_vid,
         ):
             res = client.post(
@@ -3059,6 +3062,7 @@ def test_attach_room_recording_staging_failure_cleans_up(
 
         with (
             pytest.raises(RuntimeError),
+            patch("app.routes.talks.container_duration_seconds", return_value=3600.0),
             patch.object(temp_storage, "link_or_copy", side_effect=mock_link_or_copy),
             open(clip, "rb") as f_vid,
         ):
@@ -3080,7 +3084,7 @@ def test_attach_room_recording_staging_failure_cleans_up(
 
 
 def test_attach_room_recording_platform_client_discovery_without_event_id(
-    client: TestClient, db_session, tmp_path
+    client: TestClient, db_session, temp_storage, tmp_path
 ):
     from app.auth import CurrentUser, get_current_user
     from app.main import app
@@ -3180,6 +3184,7 @@ def test_attach_room_recording_staging_failure_restores_existing_raw(
     try:
         with (
             pytest.raises(RuntimeError),
+            patch("app.routes.talks.container_duration_seconds", return_value=3600.0),
             patch.object(temp_storage, "link_or_copy", side_effect=mock_link_or_copy),
             patch("app.routes.talks._cancel_talk_jobs") as mock_cancel,
             open(clip, "rb") as f_vid,
@@ -3196,7 +3201,128 @@ def test_attach_room_recording_staging_failure_restores_existing_raw(
         assert temp_storage.get(f"{t1.id}/raw/raw.mp4").read_bytes() == t1_orig_bytes
         # Talk 2 raw file should not exist
         assert not temp_storage.exists(f"{t2.id}/raw/raw.mp4")
-        # _cancel_talk_jobs should NOT have been called because staging failed before commit
-        mock_cancel.assert_not_called()
+        # _cancel_talk_jobs is called prior to staging to prevent in-flight workers from touching overwritten assets
+        mock_cancel.assert_called_once_with(t1.id)
+    finally:
+        clip.unlink(missing_ok=True)
+
+
+def test_attach_room_recording_talk_starts_before_recording(
+    client: TestClient, db_session, temp_storage, tmp_path
+):
+    event = models.Event(name="Overlap Event")
+    db_session.add(event)
+    db_session.commit()
+
+    api_key = f"key_{uuid.uuid4().hex}"
+    client_model = models.Client(hashed_key=hash_api_key(api_key), event_ids=[event.id])
+    db_session.add(client_model)
+    db_session.commit()
+
+    now = datetime(2026, 9, 25, 9, 0, 0, tzinfo=UTC)
+    # Talk starts at 9:00, ends at 9:30
+    talk = models.Talk(
+        event_id=event.id,
+        title="Session Started Early",
+        room="Auditorium C",
+        start=now,
+        end=now + timedelta(minutes=30),
+        status="waiting_for_files",
+    )
+    db_session.add(talk)
+    db_session.commit()
+
+    # Recording starts at 9:05 (5 minutes after talk started) with duration 25 mins (1500s)
+    rec_start = now + timedelta(minutes=5)
+    clip = generate_clip(0.5, output_dir=tmp_path)
+    try:
+        with (
+            patch("app.routes.talks.light_queue"),
+            patch("app.routes.talks.container_duration_seconds", return_value=1500.0),
+            open(clip, "rb") as f_vid,
+        ):
+            res = client.post(
+                "/talks/room/attach-recording",
+                data={
+                    "room": "Auditorium C",
+                    "event_id": str(event.id),
+                    "recording_start": rec_start.isoformat(),
+                },
+                files={"file": ("recording.mp4", f_vid, "video/mp4")},
+                headers={"X-API-Key": api_key},
+            )
+            assert res.status_code == 200, res.text
+            data = res.json()
+            assert data["attached_count"] == 1
+            assert data["talk_ids"] == [talk.id]
+
+            db_session.refresh(talk)
+            # Talk started before recording, so cut_start must be 0.0 and cut_end must be 25 mins (1500.0s)
+            assert talk.cut_start == 0.0
+            assert talk.cut_end == 1500.0
+    finally:
+        clip.unlink(missing_ok=True)
+
+
+def test_attach_room_recording_omitted_start_excludes_out_of_window_talks(
+    client: TestClient, db_session, temp_storage, tmp_path
+):
+    event = models.Event(name="Window Exclude Event")
+    db_session.add(event)
+    db_session.commit()
+
+    api_key = f"key_{uuid.uuid4().hex}"
+    client_model = models.Client(hashed_key=hash_api_key(api_key), event_ids=[event.id])
+    db_session.add(client_model)
+    db_session.commit()
+
+    now = datetime(2026, 9, 25, 9, 0, 0, tzinfo=UTC)
+    talk_day1 = models.Talk(
+        event_id=event.id,
+        title="Day 1 Talk",
+        room="Room Window",
+        start=now,
+        end=now + timedelta(minutes=30),
+        status="waiting_for_files",
+    )
+    talk_day2 = models.Talk(
+        event_id=event.id,
+        title="Day 2 Talk",
+        room="Room Window",
+        start=now + timedelta(days=1),
+        end=now + timedelta(days=1, minutes=30),
+        status="waiting_for_files",
+    )
+    db_session.add(talk_day1)
+    db_session.add(talk_day2)
+    db_session.commit()
+
+    clip = generate_clip(0.5, output_dir=tmp_path)
+    try:
+        with (
+            patch("app.routes.talks.light_queue"),
+            # 45-minute recording starting at talk_day1 start time (9:00 to 9:45)
+            patch("app.routes.talks.container_duration_seconds", return_value=2700.0),
+            open(clip, "rb") as f_vid,
+        ):
+            res = client.post(
+                "/talks/room/attach-recording",
+                data={
+                    "room": "Room Window",
+                    "event_id": str(event.id),
+                },
+                files={"file": ("day1_recording.mp4", f_vid, "video/mp4")},
+                headers={"X-API-Key": api_key},
+            )
+            assert res.status_code == 200, res.text
+            data = res.json()
+            # Must attach only day 1 talk; day 2 talk is outside [rec_start, rec_end]
+            assert data["attached_count"] == 1
+            assert data["talk_ids"] == [talk_day1.id]
+
+            db_session.refresh(talk_day1)
+            db_session.refresh(talk_day2)
+            assert talk_day1.status == "detecting"
+            assert talk_day2.status == "waiting_for_files"
     finally:
         clip.unlink(missing_ok=True)

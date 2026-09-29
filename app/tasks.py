@@ -208,12 +208,9 @@ def job_ingest(talk_id: int, staged_path: str, raw_key: str | None = None) -> No
 def job_detect(
     talk_id: int,
     raw_key: str,
-    *args,
+    *,
     tolerance_seconds: float | None = None,
-    **kwargs,
 ) -> None:
-    if tolerance_seconds is None and "tolerance_seconds" in kwargs:
-        tolerance_seconds = kwargs["tolerance_seconds"]
     job_id = None
     storage = get_storage_backend()
     try:

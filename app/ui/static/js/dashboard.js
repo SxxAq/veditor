@@ -96,7 +96,8 @@ async function pollTalk(talkId) {
     let talkStatus = row ? row.dataset.status : '';
     let jobs = [];
 
-    const r = await (window.authFetch || fetch)(`/talks/${talkId}/jobs`, { _isPolling: true });
+    const headers = key ? { 'X-API-Key': key } : {};
+    const r = await (window.authFetch || fetch)(`/talks/${talkId}/jobs`, { headers, _isPolling: true });
     if (!r.ok) return;
     const data = await r.json();
     talkStatus = data.status || talkStatus;

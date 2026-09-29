@@ -1,6 +1,7 @@
 import json
 import logging
 import math
+import shutil
 import traceback
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -8,6 +9,7 @@ from decimal import ROUND_CEILING, Decimal
 from pathlib import Path
 from typing import Annotated
 
+import anyio.to_thread
 import av
 from fastapi import (
     APIRouter,
@@ -1899,12 +1901,16 @@ async def attach_room_recording(
     if file and file.filename:
         is_ephemeral_upload = True
         ext = Path(file.filename).suffix or ".mp4"
-        staged_path = storage.get_temp_dir() / f"room_upload_{uuid.uuid4().hex}{ext}"
+        staged_path = get_upload_staging_dir() / f"room_upload_{uuid.uuid4().hex}{ext}"
         try:
-            # storage-boundary-exempt: upload staging
-            with open(staged_path, "wb") as f_out:  # noqa: ASYNC230
-                while chunk := await file.read(1024 * 1024):
-                    f_out.write(chunk)
+
+            def _write_upload() -> None:
+                # storage-boundary-exempt: upload staging
+                with open(staged_path, "wb") as f_out:
+                    # storage-boundary-exempt: upload staging
+                    shutil.copyfileobj(file.file, f_out)
+
+            await anyio.to_thread.run_sync(_write_upload)
         except Exception:
             # storage-boundary-exempt: upload staging cleanup
             staged_path.unlink(missing_ok=True)
@@ -1970,14 +1976,19 @@ async def attach_room_recording(
 
     # Validate media file & probe duration
     try:
-        validate_media_file(staged_path)
-        with av.open(str(staged_path)) as container:
-            duration = container_duration_seconds(container)
-            creation_time_str = container.metadata.get("creation_time")
-            if not creation_time_str and container.streams.video:
-                creation_time_str = container.streams.video[0].metadata.get(
-                    "creation_time"
-                )
+
+        def _probe_media(p: Path) -> tuple[float | None, str | None]:
+            validate_media_file(p)
+            with av.open(str(p)) as container:
+                dur = container_duration_seconds(container)
+                c_time = container.metadata.get("creation_time")
+                if not c_time and container.streams.video:
+                    c_time = container.streams.video[0].metadata.get("creation_time")
+                return dur, c_time
+
+        duration, creation_time_str = await anyio.to_thread.run_sync(
+            _probe_media, staged_path
+        )
     except IngestPathRejectedError as exc:
         if is_ephemeral_upload:
             # storage-boundary-exempt: upload staging cleanup
@@ -2029,28 +2040,42 @@ async def attach_room_recording(
             if parsed_dt.tzinfo is None:
                 parsed_dt = parsed_dt.replace(tzinfo=UTC)
             cand_end = parsed_dt + timedelta(seconds=duration)
-            if any(t.start < cand_end and t.end > parsed_dt for t in eligible_talks):
+            if any(
+                (t.start.replace(tzinfo=UTC) if t.start.tzinfo is None else t.start)
+                < cand_end
+                and (t.end.replace(tzinfo=UTC) if t.end.tzinfo is None else t.end)
+                > parsed_dt
+                for t in eligible_talks
+            ):
                 rec_start = parsed_dt
         except ValueError, TypeError:
             pass
 
-    if rec_start is not None:
-        if rec_start.tzinfo is None:
-            rec_start = rec_start.replace(tzinfo=UTC)
-        rec_end = rec_start + timedelta(seconds=duration)
-        matched_talks = [
-            t for t in eligible_talks if t.start < rec_end and t.end > rec_start
-        ]
-        if not matched_talks:
-            if is_ephemeral_upload:
-                # storage-boundary-exempt: upload staging cleanup
-                staged_path.unlink(missing_ok=True)
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"No scheduled talks in room '{room}' match recording window ({rec_start} to {rec_end})",
-            )
-    else:
-        matched_talks = eligible_talks
+    if rec_start is None:
+        rec_start = min(
+            t.start.replace(tzinfo=UTC) if t.start.tzinfo is None else t.start
+            for t in eligible_talks
+        )
+
+    if rec_start.tzinfo is None:
+        rec_start = rec_start.replace(tzinfo=UTC)
+
+    rec_end = rec_start + timedelta(seconds=duration)
+    matched_talks = [
+        t
+        for t in eligible_talks
+        if (t.start.replace(tzinfo=UTC) if t.start.tzinfo is None else t.start)
+        < rec_end
+        and (t.end.replace(tzinfo=UTC) if t.end.tzinfo is None else t.end) > rec_start
+    ]
+    if not matched_talks:
+        if is_ephemeral_upload:
+            # storage-boundary-exempt: upload staging cleanup
+            staged_path.unlink(missing_ok=True)
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"No scheduled talks in room '{room}' match recording window ({rec_start} to {rec_end})",
+        )
 
     # Zero-copy stage into each talk's storage & advance state
     talk_ids = []
@@ -2058,27 +2083,39 @@ async def attach_room_recording(
     replaced_backups: dict[str, str] = {}
     talks_to_cancel = [t.id for t in matched_talks if t.status == "detecting"]
 
+    # Cancel previous detection jobs before modifying or overwriting storage assets
+    for tid in talks_to_cancel:
+        _cancel_talk_jobs(tid)
+
     try:
         for talk in matched_talks:
             raw_key = f"{talk.id}/raw/raw.mp4"
             if storage.exists(raw_key):
                 backup_key = f"{raw_key}.orig_{uuid.uuid4().hex}"
-                storage.link_or_copy(backup_key, storage.get(raw_key))
+                await anyio.to_thread.run_sync(
+                    storage.link_or_copy, backup_key, storage.get(raw_key)
+                )
                 replaced_backups[raw_key] = backup_key
 
-            storage.link_or_copy(raw_key, staged_path)
+            await anyio.to_thread.run_sync(storage.link_or_copy, raw_key, staged_path)
             staged_keys.append(raw_key)
 
             talk.status = "detecting"
             talk.raw_duration_seconds = duration
 
-            ref_start = rec_start if rec_start is not None else matched_talks[0].start
-            if talk.start >= ref_start:
-                offset_start = max(0.0, (talk.start - ref_start).total_seconds())
-                offset_end = min(duration, (talk.end - ref_start).total_seconds())
-                if offset_start < duration:
-                    talk.cut_start = offset_start
-                    talk.cut_end = max(offset_start, offset_end)
+            talk_start_utc = (
+                talk.start.replace(tzinfo=UTC)
+                if talk.start.tzinfo is None
+                else talk.start
+            )
+            talk_end_utc = (
+                talk.end.replace(tzinfo=UTC) if talk.end.tzinfo is None else talk.end
+            )
+            offset_start = max(0.0, (talk_start_utc - rec_start).total_seconds())
+            offset_end = min(duration, (talk_end_utc - rec_start).total_seconds())
+            if offset_end > offset_start:
+                talk.cut_start = offset_start
+                talk.cut_end = offset_end
 
             talk_ids.append(talk.id)
 
@@ -2096,7 +2133,9 @@ async def attach_room_recording(
             if key in replaced_backups:
                 b_key = replaced_backups[key]
                 try:
-                    storage.link_or_copy(key, storage.get(b_key))
+                    await anyio.to_thread.run_sync(
+                        storage.link_or_copy, key, storage.get(b_key)
+                    )
                     storage.delete(b_key)
                 except Exception as exc:  # noqa: BLE001
                     logger.debug(
@@ -2119,10 +2158,6 @@ async def attach_room_recording(
         if is_ephemeral_upload:
             # storage-boundary-exempt: upload staging cleanup
             staged_path.unlink(missing_ok=True)
-
-    # Cancel previous detection jobs now that commit succeeded
-    for tid in talks_to_cancel:
-        _cancel_talk_jobs(tid)
 
     # Enqueue detection jobs on the light queue
     for tid in talk_ids:

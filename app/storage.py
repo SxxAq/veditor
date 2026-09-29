@@ -2,6 +2,7 @@ import logging
 import os
 import shutil
 import tempfile
+import uuid
 from pathlib import Path
 from typing import Protocol
 
@@ -151,9 +152,7 @@ class LocalDiskBackend(StorageBackend):
         """
         target_path = self._get_path(key)
         target_path.parent.mkdir(parents=True, exist_ok=True)
-        with tempfile.NamedTemporaryFile(delete=False, dir=target_path.parent) as tmp:
-            tmp_path = Path(tmp.name)
-        tmp_path.unlink(missing_ok=True)
+        tmp_path = target_path.parent / f".tmp.{uuid.uuid4().hex}"
 
         try:
             os.link(source, tmp_path)

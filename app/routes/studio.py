@@ -22,7 +22,7 @@ from app.config import settings
 from app.db import get_db
 from app.queue import light_queue
 from app.routes.auth import _get_authenticated_user_from_cookie
-from app.routes.talks import _cancel_talk_jobs
+from app.routes.talks import _cancel_talk_jobs, attach_room_recording
 from app.security import decode_sso_token
 from app.storage import StorageBackend, get_storage_backend
 from app.tasks import job_waveform
@@ -1097,8 +1097,6 @@ def delete_studio_event(
     db.commit()
     return RedirectResponse(url="/studio/events", status_code=status.HTTP_303_SEE_OTHER)
 
-
-from app.routes.talks import attach_room_recording
 
 router.add_api_route(
     "/room/attach-recording",
