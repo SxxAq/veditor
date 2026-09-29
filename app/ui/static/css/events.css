@@ -381,7 +381,7 @@
 }
 
 .webhook-alert-hidden {
-  display: none !important;
+  display: none;
 }
 
 #webhook-test-alert {
@@ -401,6 +401,12 @@
   background: rgba(99, 102, 241, 0.12);
   color: var(--v-primary, #6366f1);
   border: 1px solid rgba(99, 102, 241, 0.3);
+}
+
+.alert-danger {
+  background: var(--v-status-danger-bg, rgba(239, 68, 68, 0.12));
+  color: var(--v-status-danger-text, #ef4444);
+  border: 1px solid var(--v-status-danger-border, rgba(239, 68, 68, 0.3));
 }
 
 .badge-neutral {

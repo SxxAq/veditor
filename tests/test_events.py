@@ -1,3 +1,4 @@
+import socket
 from datetime import UTC, datetime
 from unittest.mock import MagicMock, patch
 
@@ -937,9 +938,17 @@ def test_test_event_webhook_success_with_payload_args(mock_db):
     mock_resp.status = 200
     mock_resp.__enter__.return_value = mock_resp
 
-    with patch(
-        "app.routes.events._webhook_opener.open", return_value=mock_resp
-    ) as mock_open:
+    with (
+        patch(
+            "app.routes.events._webhook_opener.open", return_value=mock_resp
+        ) as mock_open,
+        patch(
+            "app.routes.events.socket.getaddrinfo",
+            return_value=[
+                (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.215.14", 443))
+            ],
+        ),
+    ):
         res = client.post(
             "/events/1/webhook/test",
             json={
@@ -986,9 +995,17 @@ def test_test_event_webhook_uses_stored_client_config(mock_db):
     mock_resp.status = 204
     mock_resp.__enter__.return_value = mock_resp
 
-    with patch(
-        "app.routes.events._webhook_opener.open", return_value=mock_resp
-    ) as mock_open:
+    with (
+        patch(
+            "app.routes.events._webhook_opener.open", return_value=mock_resp
+        ) as mock_open,
+        patch(
+            "app.routes.events.socket.getaddrinfo",
+            return_value=[
+                (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.215.14", 443))
+            ],
+        ),
+    ):
         res = client.post("/events/1/webhook/test", json={})
         assert res.status_code == 200
         data = res.json()
@@ -1017,7 +1034,15 @@ def test_test_event_webhook_http_error(mock_db):
         fp=None,
     )
 
-    with patch("app.routes.events._webhook_opener.open", side_effect=http_error):
+    with (
+        patch("app.routes.events._webhook_opener.open", side_effect=http_error),
+        patch(
+            "app.routes.events.socket.getaddrinfo",
+            return_value=[
+                (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.215.14", 443))
+            ],
+        ),
+    ):
         res = client.post(
             "/events/1/webhook/test",
             json={
@@ -1045,7 +1070,15 @@ def test_test_event_webhook_connection_error(mock_db):
 
     url_error = urllib.error.URLError(reason="Connection refused")
 
-    with patch("app.routes.events._webhook_opener.open", side_effect=url_error):
+    with (
+        patch("app.routes.events._webhook_opener.open", side_effect=url_error),
+        patch(
+            "app.routes.events.socket.getaddrinfo",
+            return_value=[
+                (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.215.14", 443))
+            ],
+        ),
+    ):
         res = client.post(
             "/events/1/webhook/test",
             json={
@@ -1131,3 +1164,123 @@ def test_api_key_create_webhook_secret_length_limit():
 
     with pytest.raises(ValidationError):
         ApiKeyCreate(webhook_secret="a" * 256)
+
+
+def test_test_event_webhook_ssrf_rejects_loopback_and_private(mock_db):
+    event = models.Event(id=1, name="Test Event", created_by_user_id=5)
+    mock_db.query.return_value.filter.return_value.first.return_value = event
+    mock_db.query.return_value.filter.return_value.all.return_value = []
+    app.dependency_overrides[get_db] = lambda: mock_db
+    app.dependency_overrides[get_current_user] = lambda: CurrentUser(
+        user_id=5, role="organizer", source="jwt"
+    )
+
+    for blocked_url in [
+        "http://127.0.0.1:8000/webhook",
+        "http://localhost:5000/webhook",
+        "http://10.0.0.5/webhook",
+        "http://192.168.1.1/webhook",
+        "http://169.254.169.254/latest/meta-data",
+        "http://[::1]:8000/webhook",
+    ]:
+        res = client.post(
+            "/events/1/webhook/test",
+            json={"url": blocked_url, "secret": "test-secret-1234"},
+        )
+        assert res.status_code == 200
+        data = res.json()
+        assert data["success"] is False
+        assert "SSRF validation failed" in data["message"]
+
+
+def test_update_event_webhook_masks_unchanged_secret(mock_db):
+    event = models.Event(id=1, name="Test Event", created_by_user_id=5)
+    existing_client = models.Client(
+        id=10,
+        is_platform=False,
+        hashed_key="hash",
+        event_ids=[1],
+        webhook_url="https://example.com/old-hook",
+        webhook_secret="super-secret-token-1234",
+    )
+
+    def mock_query(model):
+        m = MagicMock()
+        if model == models.Event:
+            m.filter.return_value.first.return_value = event
+        elif model == models.Client:
+            m.filter.return_value.all.return_value = [existing_client]
+        return m
+
+    mock_db.query.side_effect = mock_query
+    app.dependency_overrides[get_db] = lambda: mock_db
+    app.dependency_overrides[get_current_user] = lambda: CurrentUser(
+        user_id=5, role="organizer", source="jwt"
+    )
+
+    # Updating only the URL without providing secret must mask the secret in response
+    res = client.post(
+        "/events/1/webhook",
+        json={"url": "https://example.com/new-hook"},
+    )
+    assert res.status_code == 200
+    data = res.json()
+    assert data["status"] == "registered"
+    assert data["url"] == "https://example.com/new-hook"
+    assert data["secret"] == "supe...1234"
+    assert data["secret"] != "super-secret-token-1234"
+
+
+def test_update_and_delete_webhook_multi_event_client_isolation(mock_db):
+    event = models.Event(id=1, name="Test Event", created_by_user_id=5)
+    shared_client = models.Client(
+        id=50,
+        is_platform=False,
+        hashed_key="shared_key",
+        event_ids=[1, 2],
+        name="Shared Client",
+        webhook_url="https://shared.example.com/hook",
+        webhook_secret="shared-secret-1234",
+    )
+
+    def mock_query(model):
+        m = MagicMock()
+        if model == models.Event:
+            m.filter.return_value.first.return_value = event
+        elif model == models.Client:
+            m.filter.return_value.all.return_value = [shared_client]
+        return m
+
+    mock_db.query.side_effect = mock_query
+    app.dependency_overrides[get_db] = lambda: mock_db
+    app.dependency_overrides[get_current_user] = lambda: CurrentUser(
+        user_id=5, role="organizer", source="jwt"
+    )
+
+    # 1. Update webhook on event 1: shared_client must decouple event 1
+    res = client.post(
+        "/events/1/webhook",
+        json={"url": "https://event1.example.com/hook", "secret": "event1-secret-9999"},
+    )
+    assert res.status_code == 200
+    assert shared_client.event_ids == [2]
+    assert mock_db.add.called
+
+    # 2. Delete webhook on multi-event client: must remove event_id without wiping config
+    shared_client_2 = models.Client(
+        id=60,
+        is_platform=False,
+        hashed_key="shared_key_2",
+        event_ids=[1, 3],
+        webhook_url="https://shared2.example.com/hook",
+        webhook_secret="shared-secret-2",
+    )
+    mock_query_del = MagicMock()
+    mock_query_del.filter.return_value.first.return_value = event
+    mock_query_del.filter.return_value.all.return_value = [shared_client_2]
+    mock_db.query.side_effect = lambda model: mock_query_del
+
+    del_res = client.delete("/events/1/webhook")
+    assert del_res.status_code == 204
+    assert shared_client_2.event_ids == [3]
+    assert shared_client_2.webhook_url == "https://shared2.example.com/hook"

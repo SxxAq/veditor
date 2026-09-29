@@ -1,12 +1,15 @@
 import hashlib
 import hmac
+import ipaddress
 import json
 import logging
 import secrets
+import socket
 import urllib.error
 import urllib.request
 from datetime import UTC, datetime
 from typing import Annotated
+from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
@@ -337,18 +340,14 @@ def create_event_api_key(
         )
         .all()
     )
-    # Preserve existing webhook config if not explicitly provided
-    if existing_clients:
-        if not webhook_url:
-            for c in existing_clients:
-                if c.webhook_url:
-                    webhook_url = c.webhook_url
-                    break
-        if not webhook_secret:
-            for c in existing_clients:
-                if c.webhook_secret:
-                    webhook_secret = c.webhook_secret
-                    break
+    # Preserve existing webhook config from the same client if not explicitly provided
+    if existing_clients and (not webhook_url or not webhook_secret):
+        webhook_client = next((c for c in existing_clients if c.webhook_url), None)
+        if webhook_client:
+            if not webhook_url:
+                webhook_url = webhook_client.webhook_url
+            if not webhook_secret:
+                webhook_secret = webhook_client.webhook_secret
 
     for existing_c in existing_clients:
         remaining = [eid for eid in (existing_c.event_ids or []) if eid != event_id]
@@ -468,7 +467,21 @@ def update_event_webhook(
     check_event_access(event_id, user, db)
 
     client = _get_event_client(event_id, db)
-    if not client:
+    # Check if client is shared across multiple events; if so, decouple this event
+    if client and len(client.event_ids or []) > 1:
+        client.event_ids = [eid for eid in client.event_ids if eid != event_id]
+        db.flush()
+        raw_key = secrets.token_urlsafe(32)
+        new_client = models.Client(
+            hashed_key=hash_api_key(raw_key),
+            event_ids=[event_id],
+            name=f"Event #{event_id} Integration",
+            webhook_url=client.webhook_url,
+            webhook_secret=client.webhook_secret,
+        )
+        db.add(new_client)
+        client = new_client
+    elif not client:
         # Create an event-scoped client to hold the webhook configuration
         raw_key = secrets.token_urlsafe(32)
         client = models.Client(
@@ -478,21 +491,35 @@ def update_event_webhook(
         )
         db.add(client)
 
-    secret = (
-        payload.secret.strip()
-        if payload.secret and payload.secret.strip()
-        else (client.webhook_secret or secrets.token_urlsafe(32))
-    )
+    was_secret_provided = bool(payload.secret and payload.secret.strip())
+    had_existing_secret = bool(client.webhook_secret)
+
+    if was_secret_provided:
+        secret = payload.secret.strip()
+        secret_was_generated_or_rotated = True
+    elif had_existing_secret:
+        secret = client.webhook_secret
+        secret_was_generated_or_rotated = False
+    else:
+        secret = secrets.token_urlsafe(32)
+        secret_was_generated_or_rotated = True
 
     client.webhook_url = payload.url
     client.webhook_secret = secret
     db.commit()
     db.refresh(client)
 
+    # Only return unmasked secret if explicitly provided or newly generated; mask if retained unchanged
+    response_secret = (
+        secret
+        if secret_was_generated_or_rotated
+        else (f"{secret[:4]}...{secret[-4:]}" if len(secret) > 8 else "********")
+    )
+
     return schemas.WebhookRegisterResponse(
         status="registered",
         url=client.webhook_url,
-        secret=client.webhook_secret,
+        secret=response_secret,
     )
 
 
@@ -514,9 +541,52 @@ def delete_event_webhook(
     check_event_access(event_id, user, db)
     client = _get_event_client(event_id, db)
     if client:
-        client.webhook_url = None
-        client.webhook_secret = None
+        if len(client.event_ids or []) > 1:
+            client.event_ids = [eid for eid in client.event_ids if eid != event_id]
+        else:
+            client.webhook_url = None
+            client.webhook_secret = None
         db.commit()
+
+
+def _validate_webhook_target_ip(url: str) -> None:
+    """Validate that the target URL resolves only to public, globally routable IP addresses.
+    Rejects loopback, private, link-local, reserved, and multicast IP addresses to mitigate SSRF.
+    """
+    parsed = urlsplit(url)
+    hostname = parsed.hostname
+    if not hostname:
+        raise ValueError("Invalid URL: missing hostname")
+
+    try:
+        addr_info = socket.getaddrinfo(hostname, None)
+    except socket.gaierror as exc:
+        raise ValueError(
+            f"Could not resolve host '{hostname}': {exc.strerror or exc}"
+        ) from exc
+
+    if not addr_info:
+        raise ValueError(f"Could not resolve host '{hostname}'")
+
+    for item in addr_info:
+        sockaddr = item[4]
+        ip_str = sockaddr[0]
+        try:
+            ip_obj = ipaddress.ip_address(ip_str)
+        except ValueError as exc:
+            raise ValueError(f"Invalid IP address resolved for host: {ip_str}") from exc
+
+        if (
+            ip_obj.is_loopback
+            or ip_obj.is_private
+            or ip_obj.is_link_local
+            or ip_obj.is_multicast
+            or ip_obj.is_reserved
+            or ip_obj.is_unspecified
+        ):
+            raise ValueError(
+                f"Requests to private, loopback, link-local, or special IP addresses ({ip_str}) are not allowed"
+            )
 
 
 @router.post(
@@ -566,6 +636,16 @@ def test_event_webhook(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="No webhook secret provided or configured for testing.",
+        )
+
+    # Validate target URL against SSRF
+    try:
+        _validate_webhook_target_ip(target_url)
+    except ValueError as exc:
+        return schemas.WebhookTestResponse(
+            success=False,
+            status_code=None,
+            message=f"SSRF validation failed: {exc}",
         )
 
     test_payload = {
