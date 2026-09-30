@@ -576,14 +576,7 @@ def _validate_webhook_target_ip(url: str) -> None:
         except ValueError as exc:
             raise ValueError(f"Invalid IP address resolved for host: {ip_str}") from exc
 
-        if (
-            ip_obj.is_loopback
-            or ip_obj.is_private
-            or ip_obj.is_link_local
-            or ip_obj.is_multicast
-            or ip_obj.is_reserved
-            or ip_obj.is_unspecified
-        ):
+        if not ip_obj.is_global or ip_obj.is_multicast:
             raise ValueError(
                 f"Requests to private, loopback, link-local, or special IP addresses ({ip_str}) are not allowed"
             )

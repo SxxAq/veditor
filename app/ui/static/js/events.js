@@ -493,6 +493,9 @@ document.addEventListener('DOMContentLoaded', () => {
         if (resp.ok) {
           showWebhookAlert('✓ Webhook configuration saved successfully.', 'success');
           await loadWebhook(currentActiveEventId);
+          if (secret && webhookSecretInput) {
+            webhookSecretInput.value = secret;
+          }
         } else {
           const detail = data.detail;
           const msg = Array.isArray(detail) ? detail.map(d => d.msg).join(', ') : (detail || 'Failed to save webhook');

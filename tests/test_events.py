@@ -1182,6 +1182,9 @@ def test_test_event_webhook_ssrf_rejects_loopback_and_private(mock_db):
         "http://192.168.1.1/webhook",
         "http://169.254.169.254/latest/meta-data",
         "http://[::1]:8000/webhook",
+        "http://224.0.0.1/webhook",
+        "http://240.0.0.1/webhook",
+        "http://[ff02::1]/webhook",
     ]:
         res = client.post(
             "/events/1/webhook/test",
