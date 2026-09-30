@@ -2967,7 +2967,7 @@ def test_link_or_copy_fallback_preserves_source_for_multiple_talks(tmp_path):
 
 
 def test_attach_room_recording_sso_discovery_without_event_id(
-    client: TestClient, db_session, tmp_path
+    client: TestClient, db_session, temp_storage, tmp_path
 ):
     from app.auth import CurrentUser, get_current_user
     from app.main import app
@@ -3325,4 +3325,63 @@ def test_attach_room_recording_omitted_start_excludes_out_of_window_talks(
             assert talk_day1.status == "detecting"
             assert talk_day2.status == "waiting_for_files"
     finally:
+        clip.unlink(missing_ok=True)
+
+
+def test_attach_room_recording_enqueue_failure_marks_talks_broken(
+    client: TestClient, db_session, temp_storage, tmp_path
+):
+    from redis.exceptions import RedisError
+
+    from app.auth import CurrentUser, get_current_user
+    from app.main import app
+
+    event = models.Event(
+        name="Enqueue Failure Room Event",
+    )
+    db_session.add(event)
+    db_session.commit()
+
+    now = datetime(2026, 9, 25, 9, 0, 0, tzinfo=UTC)
+    talk = models.Talk(
+        event_id=event.id,
+        title="Enqueue Fail Talk",
+        room="Hall Fail",
+        start=now,
+        end=now + timedelta(minutes=30),
+        status="waiting_for_files",
+    )
+    db_session.add(talk)
+    db_session.commit()
+
+    app.dependency_overrides[get_current_user] = lambda: CurrentUser(
+        user_id=888,
+        role="admin",
+        source="jwt",
+        event_ids=[event.id],
+    )
+
+    clip = generate_clip(0.5, output_dir=tmp_path)
+    try:
+        mock_light_q = MagicMock()
+        mock_light_q.enqueue.side_effect = RedisError("Simulated Redis outage")
+        with (
+            patch("app.routes.talks.light_queue", mock_light_q),
+            open(clip, "rb") as f_vid,
+        ):
+            res = client.post(
+                "/talks/room/attach-recording",
+                data={
+                    "room": "Hall Fail",
+                    "event_id": str(event.id),
+                },
+                files={"file": ("recording.mp4", f_vid, "video/mp4")},
+            )
+            assert res.status_code == 503
+            assert "Detection queue is unavailable" in res.json()["detail"]
+
+            db_session.refresh(talk)
+            assert talk.status == "broken"
+    finally:
+        app.dependency_overrides.pop(get_current_user, None)
         clip.unlink(missing_ok=True)

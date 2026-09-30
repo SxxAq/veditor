@@ -22,6 +22,7 @@ from fastapi import (
     UploadFile,
     status,
 )
+from redis.exceptions import RedisError
 from rq.command import send_stop_job_command
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -2160,14 +2161,26 @@ async def attach_room_recording(
             staged_path.unlink(missing_ok=True)
 
     # Enqueue detection jobs on the light queue
-    for tid in talk_ids:
-        light_queue.enqueue(
-            job_detect,
-            tid,
-            f"{tid}/raw/raw.mp4",
-            tolerance_seconds=float("inf"),
-            job_timeout=STAGE_CONFIG["detect"]["job_timeout"],
-        )
+    for index, tid in enumerate(talk_ids):
+        try:
+            light_queue.enqueue(
+                job_detect,
+                tid,
+                f"{tid}/raw/raw.mp4",
+                tolerance_seconds=float("inf"),
+                job_timeout=STAGE_CONFIG["detect"]["job_timeout"],
+            )
+        except (OSError, RedisError, RuntimeError) as exc:
+            for failed_tid in talk_ids[index:]:
+                failed_talk = db.get(models.Talk, failed_tid)
+                if failed_talk and failed_talk.status == "detecting":
+                    advance(failed_talk, "broken")
+            db.commit()
+            logger.exception("Failed to enqueue detection jobs")
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Detection queue is unavailable",
+            ) from exc
 
     logger.info(
         "Attached room recording to %d talks in room '%s' (event %d): %s",
