@@ -251,9 +251,10 @@ def job_detect(
             job_id = job.id
             scheduled_start = talk.start
             scheduled_end = talk.end
-            tolerance_seconds = float(
-                get_setting("detect_duration_tolerance_seconds", 300.0, db=db)
-            )
+            if tolerance_seconds is None:
+                tolerance_seconds = float(
+                    get_setting("detect_duration_tolerance_seconds", 300.0, db=db)
+                )
 
         # Omit parameter when default to preserve pipeline default and mock compatibility
         detect_kwargs = (
@@ -262,9 +263,6 @@ def job_detect(
             else {}
         )
         raw_path = storage.get(raw_key)
-        detect_kwargs = {}
-        if tolerance_seconds is not None:
-            detect_kwargs["tolerance_seconds"] = tolerance_seconds
         result = detect(
             raw_path,
             scheduled_start=scheduled_start,
