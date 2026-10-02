@@ -372,3 +372,37 @@ async def api_auth_token(
         token_type="bearer",
         expires_in=settings.access_token_expire_seconds,
     )
+
+
+@router.post("/users/request-organizer", response_model=schemas.UserRead)
+def request_organizer_role(
+    payload: schemas.OrganizerRequestCreate,
+    request: Request,
+    db: Annotated[Session, Depends(get_db)],
+):
+    """Allow a standard user to request organizer role elevation."""
+    user = _get_authenticated_user_from_cookie(request, db)
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication required",
+        )
+    if user.role != "user":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Only standard users can request organizer access",
+        )
+    if user.organizer_requested:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="An organizer access request is already pending",
+        )
+    from datetime import UTC, datetime
+
+    user.organizer_requested = True
+    user.organizer_request_note = (payload.note or "").strip() or None
+    user.organizer_requested_at = datetime.now(UTC)
+    db.commit()
+    db.refresh(user)
+    logger.info("User %s submitted organizer role request", user.email)
+    return user

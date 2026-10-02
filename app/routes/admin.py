@@ -296,6 +296,9 @@ def promote_user(
             )
 
     target.role = payload.role
+    if payload.role == "organizer" and target.organizer_requested:
+        target.organizer_requested = False
+        target.organizer_request_note = None
     db.commit()
     db.refresh(target)
     return target

@@ -102,6 +102,11 @@
             <span class="badge badge-role badge-role-{{ item.role }}" id="badge-role-{{ item.id }}">
               {{ item.role | capitalize }}
             </span>
+            {% if item.organizer_requested and item.role == 'user' %}
+              <span class="badge badge-pending-request" id="pending-badge-{{ item.id }}"
+                title="{{ item.organizer_request_note or 'No note provided' }}"
+              >Pending Request</span>
+            {% endif %}
           </td>
           <td class="col-user-status">
             {% if item.is_active %}
@@ -135,6 +140,18 @@
                 <option value="speaker" selected disabled>Speaker</option>
                 {% endif %}
               </select>
+
+              {% if item.organizer_requested and item.role == 'user' %}
+                <button
+                  type="button"
+                  class="btn btn-primary btn-xs btn-approve-organizer"
+                  id="approve-organizer-btn-{{ item.id }}"
+                  data-user-id="{{ item.id }}"
+                  title="Approve organizer request"
+                >
+                  Approve
+                </button>
+              {% endif %}
 
               {% if item.is_active %}
                 <button

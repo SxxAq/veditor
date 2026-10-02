@@ -71,6 +71,20 @@ class User(Base):
         server_default=text("true"),
         nullable=False,
     )
+    organizer_requested: Mapped[bool] = mapped_column(
+        Boolean,
+        default=False,
+        server_default=text("false"),
+        nullable=False,
+    )
+    organizer_request_note: Mapped[str | None] = mapped_column(
+        String(1000),
+        nullable=True,
+    )
+    organizer_requested_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
@@ -87,6 +101,7 @@ class User(Base):
 
     events: Mapped[list[Event]] = relationship(back_populates="created_by_user")
     reviews: Mapped[list[Review]] = relationship(back_populates="user")
+
 
 
 class Event(Base):

@@ -182,3 +182,61 @@
   font-size: 0.82rem;
 }
 
+
+/* ---------------------------------------------------------------------------
+   Organizer Role Request Banner
+   --------------------------------------------------------------------------- */
+.role-request-banner {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.75rem 1rem;
+  margin-bottom: 1rem;
+  background: color-mix(in srgb, var(--color-blue, #3b82f6) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-blue, #3b82f6) 35%, transparent);
+  border-radius: var(--radius-md, 8px);
+  font-size: 0.875rem;
+  color: var(--color-text, #e2e8f0);
+  flex-wrap: wrap;
+}
+
+.role-request-banner.role-request-pending {
+  background: color-mix(in srgb, var(--color-amber, #f59e0b) 12%, transparent);
+  border-color: color-mix(in srgb, var(--color-amber, #f59e0b) 35%, transparent);
+}
+
+.role-request-icon { font-size: 1.1rem; flex-shrink: 0; }
+
+.role-request-banner .btn { margin-left: auto; }
+
+/* ---------------------------------------------------------------------------
+   Request Organizer Modal
+   --------------------------------------------------------------------------- */
+.modal-overlay.hidden { display: none; }
+
+#modal-request-organizer .modal-description {
+  font-size: 0.875rem;
+  color: var(--color-text-muted, #94a3b8);
+  margin-bottom: 1rem;
+}
+
+#organizer-request-note {
+  width: 100%;
+  resize: vertical;
+  min-height: 80px;
+}
+
+.form-hint {
+  font-size: 0.78rem;
+  color: var(--color-text-muted, #94a3b8);
+  text-align: right;
+  margin-top: 0.25rem;
+}
+
+.form-error {
+  color: var(--color-danger, #f87171);
+  font-size: 0.85rem;
+  margin-top: 0.5rem;
+}
+
+.form-error.hidden { display: none; }
