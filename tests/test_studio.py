@@ -3407,15 +3407,17 @@ def test_attach_room_recording_enqueue_failure_marks_talks_broken(
 
 def test_sso_organizer_management_controls_visible(client, db_session):
     """Verify organizers arriving via SSO have full access to management buttons while speakers do not."""
-    from app.security import create_sso_token
     import uuid
+
+    from app.security import create_sso_token
 
     event = models.Event(name=f"SSO Org Event {uuid.uuid4().hex}")
     db_session.add(event)
     db_session.commit()
     db_session.refresh(event)
 
-    from datetime import datetime, UTC, timedelta
+    from datetime import UTC, datetime, timedelta
+
     now_utc = datetime.now(UTC)
     talk = models.Talk(
         event_id=event.id,
@@ -3431,7 +3433,9 @@ def test_sso_organizer_management_controls_visible(client, db_session):
     db_session.refresh(talk)
 
     # 1. Organizer via SSO
-    org_token = create_sso_token(scope_type="event", scope_id=event.id, role="organizer")
+    org_token = create_sso_token(
+        scope_type="event", scope_id=event.id, role="organizer"
+    )
     client.cookies.set("veditor_session", org_token)
 
     res_org_dash = client.get(f"/studio?event_id={event.id}")
