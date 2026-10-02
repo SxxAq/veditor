@@ -50,7 +50,7 @@
 {% endmacro %}
 
 {% block content %}
-{% set can_manage = (user and user.role in ['organizer', 'admin'] and not user.is_sso) or (user is none) %}
+{% set can_manage = (user and user.role in ['organizer', 'admin']) or (user is none) %}
 <div class="page-body">
 
   {% if error %}
