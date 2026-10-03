@@ -15,6 +15,7 @@ from app.security import (
     create_access_token,
     create_session_token,
     decode_session_token,
+    decode_sso_token,
     hash_password,
     is_valid_email,
     verify_password,
@@ -381,6 +382,15 @@ def request_organizer_role(
     db: Annotated[Session, Depends(get_db)],
 ):
     """Allow a standard user to request organizer role elevation."""
+    cookie_token = request.cookies.get("veditor_session")
+    if (
+        cookie_token and decode_sso_token(cookie_token) is not None
+    ) or request.headers.get("X-SSO-Token"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="SSO sessions cannot request organizer access",
+        )
+
     user = _get_authenticated_user_from_cookie(request, db)
     if not user:
         raise HTTPException(

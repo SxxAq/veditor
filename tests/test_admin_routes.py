@@ -1635,6 +1635,29 @@ def test_request_organizer_role_unauthenticated(client: TestClient):
     assert res.status_code == 401
 
 
+def test_request_organizer_role_sso_rejected(client: TestClient):
+    """SSO sessions are forbidden from requesting organizer access."""
+    from app.security import create_sso_token
+
+    sso_token = create_sso_token(
+        scope_type="event", scope_id=1, role="speaker", email="sso@example.com"
+    )
+    client.cookies.set("veditor_session", sso_token)
+
+    res = client.post("/users/request-organizer", json={"note": "SSO note"})
+    assert res.status_code == 403
+    assert "SSO sessions cannot request organizer access" in res.json()["detail"]
+
+    client.cookies.clear()
+    res_hdr = client.post(
+        "/users/request-organizer",
+        json={"note": "SSO note"},
+        headers={"X-SSO-Token": sso_token},
+    )
+    assert res_hdr.status_code == 403
+    assert "SSO sessions cannot request organizer access" in res_hdr.json()["detail"]
+
+
 def test_request_organizer_optional_note_empty_string(client: TestClient, db_session):
     """Empty note is treated as None."""
     user = _create_test_user(db_session, "req_org_4@admin-test.com", role="user")
@@ -1694,3 +1717,38 @@ def test_admin_demotion_does_not_clear_already_false_request(
     res = client.post(f"/admin/users/{user.id}/promote", json={"role": "user"})
     assert res.status_code == 200
     assert res.json()["role"] == "user"
+
+
+def test_admin_users_pending_requests_filter(client: TestClient, db_session):
+    """Admin can filter user list by pending organizer requests."""
+    admin = _create_test_user(db_session, "admin_filter@admin-test.com", role="admin")
+    user_pending = _create_test_user(
+        db_session, "pending_user@admin-test.com", role="user"
+    )
+    user_pending.organizer_requested = True
+    user_pending.organizer_request_note = "I am a summit organizer"
+    _create_test_user(db_session, "normal_user@admin-test.com", role="user")
+    db_session.commit()
+
+    token = create_session_token(admin.id, admin.role)
+    client.cookies.set("veditor_session", token)
+
+    # 1. Unfiltered list contains both users
+    res = client.get("/admin/users", headers={"Accept": "text/html"})
+    assert res.status_code == 200
+    assert "pending_user@admin-test.com" in res.text
+    assert "normal_user@admin-test.com" in res.text
+    assert "Pending Requests" in res.text
+
+    # 2. Filtered list with ?pending=true contains only pending_user
+    res_filtered = client.get(
+        "/admin/users?pending=true", headers={"Accept": "text/html"}
+    )
+    assert res_filtered.status_code == 200
+    assert "pending_user@admin-test.com" in res_filtered.text
+    assert "normal_user@admin-test.com" not in res_filtered.text
+    assert "I am a summit organizer" in res_filtered.text
+    assert "stat-card-link active" in res_filtered.text
+
+    # 3. Filtered list preserves pending parameter in search form and links
+    assert 'name="pending" value="true"' in res_filtered.text
