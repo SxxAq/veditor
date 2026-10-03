@@ -26,7 +26,7 @@ def upgrade() -> None:
     )
     op.add_column(
         "users",
-        sa.Column("organizer_request_note", sa.String(1000), nullable=True),
+        sa.Column("organizer_request_note", sa.String(500), nullable=True),
     )
     op.add_column(
         "users",

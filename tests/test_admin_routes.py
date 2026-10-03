@@ -1582,6 +1582,7 @@ def test_admin_users_html_skip_out_of_range_raises_404(client: TestClient, db_se
 # Organizer Role Request Flow Tests
 # ---------------------------------------------------------------------------
 
+
 def test_request_organizer_role_success(client: TestClient, db_session):
     """Standard user can submit an organizer request."""
     user = _create_test_user(db_session, "req_org_1@admin-test.com", role="user")
@@ -1646,6 +1647,18 @@ def test_request_organizer_optional_note_empty_string(client: TestClient, db_ses
     assert data["organizer_request_note"] is None
 
 
+def test_request_organizer_note_exceeding_max_length_rejected(
+    client: TestClient, db_session
+):
+    """Note exceeding 500 characters is rejected with 422 Unprocessable Entity."""
+    user = _create_test_user(db_session, "req_org_len@admin-test.com", role="user")
+    token = create_session_token(user.id, user.role)
+    client.cookies.set("veditor_session", token)
+
+    res = client.post("/users/request-organizer", json={"note": "a" * 501})
+    assert res.status_code == 422
+
+
 def test_admin_approve_clears_pending_request(client: TestClient, db_session):
     """Admin promoting a user to organizer clears the pending request flag."""
     admin = _create_test_user(db_session, "admin_appv@admin-test.com", role="admin")
@@ -1668,7 +1681,9 @@ def test_admin_approve_clears_pending_request(client: TestClient, db_session):
     assert user.organizer_requested is False
 
 
-def test_admin_demotion_does_not_clear_already_false_request(client: TestClient, db_session):
+def test_admin_demotion_does_not_clear_already_false_request(
+    client: TestClient, db_session
+):
     """Demoting a user (no pending request) doesn't error."""
     admin = _create_test_user(db_session, "admin_dem@admin-test.com", role="admin")
     user = _create_test_user(db_session, "req_org_6@admin-test.com", role="organizer")

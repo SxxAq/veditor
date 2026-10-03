@@ -388,7 +388,7 @@ class UserRead(BaseModel):
 
 
 class OrganizerRequestCreate(BaseModel):
-    note: str | None = None
+    note: str | None = Field(default=None, max_length=500)
 
 
 class UserPromoteRequest(BaseModel):

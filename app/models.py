@@ -78,7 +78,7 @@ class User(Base):
         nullable=False,
     )
     organizer_request_note: Mapped[str | None] = mapped_column(
-        String(1000),
+        String(500),
         nullable=True,
     )
     organizer_requested_at: Mapped[datetime | None] = mapped_column(
@@ -101,7 +101,6 @@ class User(Base):
 
     events: Mapped[list[Event]] = relationship(back_populates="created_by_user")
     reviews: Mapped[list[Review]] = relationship(back_populates="user")
-
 
 
 class Event(Base):

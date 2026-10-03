@@ -399,9 +399,29 @@ def request_organizer_role(
         )
     from datetime import UTC, datetime
 
-    user.organizer_requested = True
-    user.organizer_request_note = (payload.note or "").strip() or None
-    user.organizer_requested_at = datetime.now(UTC)
+    requested_at = datetime.now(UTC)
+    note_val = (payload.note or "").strip() or None
+
+    rows_updated = (
+        db.query(models.User)
+        .filter(
+            models.User.id == user.id,
+            models.User.organizer_requested.is_(False),
+        )
+        .update(
+            {
+                models.User.organizer_requested: True,
+                models.User.organizer_request_note: note_val,
+                models.User.organizer_requested_at: requested_at,
+            },
+            synchronize_session="fetch",
+        )
+    )
+    if not rows_updated:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="An organizer access request is already pending",
+        )
     db.commit()
     db.refresh(user)
     logger.info("User %s submitted organizer role request", user.email)
