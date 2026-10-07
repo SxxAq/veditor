@@ -1433,3 +1433,98 @@ def test_unified_transcode_resolves_staged_slates_and_bypasses_concat_reencode(
     assert captured_transcode_kwargs["intro_path"] == Path("/tmp/fake_media.mp4")
     assert captured_transcode_kwargs["outro_path"] == Path("/tmp/fake_media.mp4")
     assert captured_transcode_kwargs["target_lufs"] is None
+
+
+def test_job_ingest_room_url_success(tmp_path):
+    from datetime import UTC, datetime, timedelta
+    from unittest.mock import MagicMock, patch
+
+    from app.models import Job, Talk
+    from app.tasks import job_ingest_room_url
+    from tests.conftest import generate_clip
+
+    clip = generate_clip(1.0, output_dir=tmp_path)
+    now = datetime(2026, 9, 25, 10, 0, 0, tzinfo=UTC)
+
+    talk1 = Talk(
+        id=201,
+        event_id=10,
+        title="Talk 1",
+        room="Room URL",
+        start=now,
+        end=now + timedelta(minutes=30),
+        status="waiting_for_files",
+    )
+    talk2 = Talk(
+        id=202,
+        event_id=10,
+        title="Talk 2",
+        room="Room URL",
+        start=now + timedelta(minutes=30),
+        end=now + timedelta(minutes=60),
+        status="waiting_for_files",
+    )
+
+    talks_dict = {201: talk1, 202: talk2}
+    jobs_dict = {}
+
+    class RoomMockDBSession:
+        def __enter__(self):
+            s = MagicMock()
+
+            def query_mock(model):
+                q = MagicMock()
+                if model == Talk:
+
+                    def filter_mock(*args):
+                        sub = MagicMock()
+                        sub.filter.return_value = sub
+                        sub.order_by.return_value = sub
+                        sub.all.return_value = list(talks_dict.values())
+                        return sub
+
+                    q.filter.side_effect = filter_mock
+                return q
+
+            s.query.side_effect = query_mock
+            s.get.side_effect = lambda m, pk: (
+                talks_dict.get(pk) if m == Talk else jobs_dict.get(pk)
+            )
+
+            def add_mock(obj):
+                if isinstance(obj, Job):
+                    obj.id = len(jobs_dict) + 1
+                    jobs_dict[obj.id] = obj
+
+            s.add.side_effect = add_mock
+            return s
+
+        def __exit__(self, *args):
+            pass
+
+    mock_storage = MagicMock()
+    mock_storage.free_bytes.return_value = 10**10
+
+    with (
+        patch("app.tasks.SessionLocal", side_effect=RoomMockDBSession),
+        patch("app.tasks.get_storage_backend", return_value=mock_storage),
+        patch("app.tasks.download_media_url", return_value=clip),
+        patch("app.tasks.container_duration_seconds", return_value=3600.0),
+        patch("app.tasks.light_queue.enqueue") as mock_light_q,
+    ):
+        job_ingest_room_url(
+            event_id=10,
+            room="Room URL",
+            video_url="https://youtube.com/watch?v=sample",
+            recording_start_iso=now.isoformat(),
+            talk_ids=[201, 202],
+        )
+
+    assert talk1.status == "detecting"
+    assert talk2.status == "detecting"
+    assert talk1.cut_start == 0.0
+    assert talk1.cut_end == 1800.0
+    assert talk2.cut_start == 1800.0
+    assert talk2.cut_end == 3600.0
+    assert mock_storage.link_or_copy.call_count == 2
+    assert mock_light_q.call_count == 2

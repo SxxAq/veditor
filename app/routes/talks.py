@@ -58,6 +58,7 @@ from app.tasks import (
     job_cut,
     job_detect,
     job_ingest,
+    job_ingest_room_url,
 )
 from app.webhook import dispatch_talk_webhook
 
@@ -1734,6 +1735,7 @@ async def attach_room_recording(
     room: Annotated[str | None, Form()] = None,
     event_id: Annotated[int | None, Form()] = None,
     file: Annotated[UploadFile | None, File()] = None,
+    video_url: Annotated[str | None, Form()] = None,
     relative_key: Annotated[str | None, Form()] = None,
     source_path: Annotated[str | None, Form()] = None,
     recording_start: Annotated[datetime | None, Form()] = None,
@@ -1747,6 +1749,7 @@ async def attach_room_recording(
             if isinstance(body, dict):
                 room = body.get("room", room)
                 event_id = body.get("event_id", event_id)
+                video_url = body.get("video_url", video_url)
                 relative_key = body.get("relative_key", relative_key)
                 source_path = body.get("source_path", source_path)
                 rec_start_str = body.get("recording_start")
@@ -1755,7 +1758,7 @@ async def attach_room_recording(
                         recording_start = datetime.fromisoformat(rec_start_str)
                     except ValueError:
                         pass
-        except ValueError, TypeError, UnicodeDecodeError:
+        except (ValueError, TypeError, UnicodeDecodeError):  # fmt: skip
             pass
 
     if not room or not room.strip():
@@ -1817,6 +1820,67 @@ async def attach_room_recording(
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"No talks in room '{room}' are currently waiting for files (sessions may already be in review or published)",
+        )
+
+    # Validate recording source
+    has_file = bool(file and file.filename)
+    has_url = bool(video_url and str(video_url).strip())
+    has_path = bool(relative_key or source_path)
+
+    sources_count = sum([has_file, has_url, has_path])
+    if sources_count == 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Either video_url, a video file upload, or relative_key/source_path must be provided",
+        )
+    if sources_count > 1:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Provide only one recording source (video_url, video file upload, or relative_key/source_path)",
+        )
+
+    if has_url:
+        clean_url = str(video_url).strip()
+        if not clean_url.startswith(("http://", "https://")):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="video_url must start with http:// or https://",
+            )
+
+        talk_ids = [t.id for t in eligible_talks]
+        talks_to_cancel = [t.id for t in eligible_talks if t.status == "detecting"]
+        for tid in talks_to_cancel:
+            _cancel_talk_jobs(tid)
+
+        for talk in eligible_talks:
+            talk.status = "detecting"
+        db.commit()
+
+        rec_start_iso = recording_start.isoformat() if recording_start else None
+        heavy_queue.enqueue(
+            job_ingest_room_url,
+            event_id,
+            room,
+            clean_url,
+            recording_start_iso=rec_start_iso,
+            talk_ids=talk_ids,
+            job_timeout=3600,
+        )
+
+        logger.info(
+            "Queued URL room recording ingest for %d talks in room '%s' (event %d) from %s",
+            len(talk_ids),
+            room,
+            event_id,
+            clean_url,
+        )
+
+        return schemas.RoomRecordingAttachResponse(
+            attached_count=len(talk_ids),
+            room=room,
+            event_id=event_id,
+            talk_ids=talk_ids,
+            recording_duration_seconds=None,
         )
 
     # Stage media
@@ -1973,7 +2037,7 @@ async def attach_room_recording(
                 for t in eligible_talks
             ):
                 rec_start = parsed_dt
-        except ValueError, TypeError:
+        except (ValueError, TypeError):  # fmt: skip
             pass
 
     if rec_start is None:

@@ -165,3 +165,63 @@ def stage_custom_clip(
     key = f"{talk_id}/{stage}/{stage}.mp4"
     backend.put(key=key, source=resolved_path)
     return key
+
+
+def download_media_url(url: str, output_path: Path) -> Path:
+    """Download a video or stream URL using yt-dlp to a specified destination Path.
+
+    Returns the path to the downloaded file.
+    """
+    import yt_dlp
+
+    # storage-boundary-exempt: upload staging directory
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    outtmpl = str(output_path)
+    if not outtmpl.endswith(".%(ext)s"):
+        stem = output_path.stem
+        parent = output_path.parent
+        outtmpl = str(parent / f"{stem}.%(ext)s")
+
+    ydl_opts = {
+        "outtmpl": outtmpl,
+        "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best[ext=mp4]/best",
+        "noplaylist": True,
+        "quiet": True,
+        "no_warnings": True,
+        "merge_output_format": "mp4",
+        "socket_timeout": 30,
+        "retries": 5,
+        "fragment_retries": 5,
+        "extractor_args": {
+            "youtube": {
+                "player_client": ["android", "ios"],
+            }
+        },
+        "http_headers": {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/123.0.0.0 Safari/537.36"
+            ),
+            "Accept": "*/*",
+            "Accept-Language": "en-US,en;q=0.9",
+        },
+    }
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        info = ydl.extract_info(url, download=True)
+        filename = ydl.prepare_filename(info)
+        downloaded = Path(filename)
+        if not downloaded.exists():
+            candidate_mp4 = downloaded.with_suffix(".mp4")
+            if candidate_mp4.exists():
+                downloaded = candidate_mp4
+        if not downloaded.exists():
+            matches = list(output_path.parent.glob(f"{output_path.stem}.*"))
+            if matches:
+                downloaded = matches[0]
+
+    if not downloaded.exists():
+        raise FileNotFoundError(f"Failed to find downloaded file for {url}")
+
+    return downloaded
