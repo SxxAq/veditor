@@ -1,3 +1,4 @@
+import logging
 import tempfile
 from decimal import ROUND_CEILING, Decimal
 from pathlib import Path
@@ -7,6 +8,8 @@ import av
 from app.config import settings
 from app.schemas import RecordingIngestRequest
 from app.storage import StorageBackend
+
+logger = logging.getLogger(__name__)
 
 
 class IngestPathRejectedError(ValueError):
@@ -193,6 +196,9 @@ def download_media_url(url: str, output_path: Path) -> Path:
         "socket_timeout": 30,
         "retries": 5,
         "fragment_retries": 5,
+        "match_filter": yt_dlp.utils.match_filter_func("!is_live"),
+        "max_filesize": getattr(settings, "max_url_download_bytes", None)
+        or (20 * 1024 * 1024 * 1024),
         "extractor_args": {
             "youtube": {
                 "player_client": ["android", "ios"],
@@ -208,20 +214,35 @@ def download_media_url(url: str, output_path: Path) -> Path:
             "Accept-Language": "en-US,en;q=0.9",
         },
     }
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(url, download=True)
-        filename = ydl.prepare_filename(info)
-        downloaded = Path(filename)
-        if not downloaded.exists():
-            candidate_mp4 = downloaded.with_suffix(".mp4")
-            if candidate_mp4.exists():
-                downloaded = candidate_mp4
-        if not downloaded.exists():
-            matches = list(output_path.parent.glob(f"{output_path.stem}.*"))
-            if matches:
-                downloaded = matches[0]
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            filename = ydl.prepare_filename(info)
+            downloaded = Path(filename)
+            if not downloaded.exists():
+                candidate_mp4 = downloaded.with_suffix(".mp4")
+                if candidate_mp4.exists():
+                    downloaded = candidate_mp4
+            if not downloaded.exists():
+                matches = list(output_path.parent.glob(f"{output_path.stem}.*"))
+                if matches:
+                    downloaded = matches[0]
 
-    if not downloaded.exists():
-        raise FileNotFoundError(f"Failed to find downloaded file for {url}")
+        if not downloaded.exists():
+            raise FileNotFoundError(f"Failed to find downloaded file for {url}")
 
-    return downloaded
+        return downloaded
+    except Exception:
+        # Clean up any partial files matching this invocation's unique output prefix
+        for partial_file in output_path.parent.glob(f"{output_path.stem}*"):
+            try:
+                if partial_file.is_file():
+                    # storage-boundary-exempt: cleanup partial download on failure
+                    partial_file.unlink(missing_ok=True)
+            except OSError as cleanup_err:
+                logger.warning(
+                    "Failed to remove partial download file %s: %s",
+                    partial_file,
+                    cleanup_err,
+                )
+        raise

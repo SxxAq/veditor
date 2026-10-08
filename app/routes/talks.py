@@ -757,6 +757,15 @@ def _cancel_talk_jobs(talk_id: int, storage: StorageBackend | None = None) -> No
     an aggregate RuntimeError before callers delete or reset database records.
     """
     errors: list[str] = []
+
+    def _matches_talk(rq_job) -> bool:
+        if not rq_job:
+            return False
+        if rq_job.func_name == "app.tasks.job_ingest_room_url":
+            job_tids = rq_job.kwargs.get("talk_ids") if rq_job.kwargs else None
+            return bool(job_tids and talk_id in job_tids)
+        return bool(rq_job.args and rq_job.args[0] == talk_id)
+
     try:
         from rq.registry import StartedJobRegistry
 
@@ -765,7 +774,7 @@ def _cancel_talk_jobs(talk_id: int, storage: StorageBackend | None = None) -> No
             for job_id in list(q.job_ids):
                 try:
                     rq_job = q.fetch_job(job_id)
-                    if rq_job and rq_job.args and rq_job.args[0] == talk_id:
+                    if _matches_talk(rq_job):
                         rq_job.cancel()
                         rq_job.delete()
                 except Exception as exc:  # noqa: BLE001
@@ -784,7 +793,7 @@ def _cancel_talk_jobs(talk_id: int, storage: StorageBackend | None = None) -> No
                     for job_id in reg.get_job_ids():
                         try:
                             rq_job = q.fetch_job(job_id)
-                            if rq_job and rq_job.args and rq_job.args[0] == talk_id:
+                            if _matches_talk(rq_job):
                                 send_stop_job_command(q.connection, job_id)
                                 rq_job.cancel()
                                 rq_job.delete()
@@ -798,7 +807,7 @@ def _cancel_talk_jobs(talk_id: int, storage: StorageBackend | None = None) -> No
                 for job_id in registry.get_job_ids():
                     try:
                         rq_job = q.fetch_job(job_id)
-                        if rq_job and rq_job.args and rq_job.args[0] == talk_id:
+                        if _matches_talk(rq_job):
                             send_stop_job_command(q.connection, job_id)
                             rq_job.cancel()
                             rq_job.delete()
@@ -1852,20 +1861,31 @@ async def attach_room_recording(
         for tid in talks_to_cancel:
             _cancel_talk_jobs(tid)
 
+        prev_statuses = {t.id: t.status for t in eligible_talks}
         for talk in eligible_talks:
             talk.status = "detecting"
         db.commit()
 
         rec_start_iso = recording_start.isoformat() if recording_start else None
-        heavy_queue.enqueue(
-            job_ingest_room_url,
-            event_id,
-            room,
-            clean_url,
-            recording_start_iso=rec_start_iso,
-            talk_ids=talk_ids,
-            job_timeout=3600,
-        )
+        try:
+            heavy_queue.enqueue(
+                job_ingest_room_url,
+                event_id,
+                room,
+                clean_url,
+                recording_start_iso=rec_start_iso,
+                talk_ids=talk_ids,
+                job_timeout=3600,
+            )
+        except (OSError, RedisError, RuntimeError) as exc:
+            logger.error("Failed to enqueue room URL ingest job: %s", exc)
+            for talk in eligible_talks:
+                talk.status = prev_statuses.get(talk.id, "waiting_for_files")
+            db.commit()
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Background ingest queue is temporarily unavailable",
+            ) from exc
 
         logger.info(
             "Queued URL room recording ingest for %d talks in room '%s' (event %d) from %s",

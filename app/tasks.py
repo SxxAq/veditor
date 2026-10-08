@@ -307,11 +307,25 @@ def job_ingest_room_url(
             query = db.query(Talk).filter(Talk.event_id == event_id, Talk.room == room)
             if talk_ids:
                 query = query.filter(Talk.id.in_(talk_ids))
-            eligible_talks = query.order_by(Talk.start).all()
+            eligible_talks = [
+                t
+                for t in query.order_by(Talk.start).all()
+                if t.id in job_ids and t.status == "detecting"
+            ]
             if not eligible_talks:
                 logger.warning(
                     "No eligible talks found in room '%s' for event %d", room, event_id
                 )
+                for jid in job_ids.values():
+                    job = db.get(Job, jid)
+                    if job:
+                        job.status = "cancelled"
+                        job.updated_at = datetime.now(UTC)
+                for tid in job_ids:
+                    talk = db.get(Talk, tid)
+                    if talk and talk.status == "detecting":
+                        talk.status = "waiting_for_files"
+                db.commit()
                 return
 
             rec_start = recording_start
@@ -400,6 +414,7 @@ def job_ingest_room_url(
             db.commit()
 
         # Enqueue detection jobs
+        enqueued_talk_ids = set()
         for tid in matched_ids:
             light_queue.enqueue(
                 job_detect,
@@ -408,6 +423,7 @@ def job_ingest_room_url(
                 tolerance_seconds=float("inf"),
                 job_timeout=STAGE_CONFIG["detect"]["job_timeout"],
             )
+            enqueued_talk_ids.add(tid)
 
     except Exception:
         logger.exception(
@@ -415,6 +431,8 @@ def job_ingest_room_url(
         )
         with SessionLocal() as db:
             for tid, jid in job_ids.items():
+                if tid in enqueued_talk_ids:
+                    continue
                 job = db.get(Job, jid)
                 if job:
                     job.status = "failed"
