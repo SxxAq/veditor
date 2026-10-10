@@ -254,6 +254,7 @@ def job_ingest_room_url(
     staged_target = get_upload_staging_dir() / f"room_url_{uuid.uuid4().hex}.mp4"
     staged_path: Path | None = None
     job_ids: dict[int, int] = {}
+    enqueued_talk_ids: set[int] = set()
     try:
         # Create ingest jobs for tracked talks so status and progress are recorded
         with SessionLocal() as db:
@@ -420,7 +421,6 @@ def job_ingest_room_url(
             db.commit()
 
         # Enqueue detection jobs
-        enqueued_talk_ids = set()
         for tid in matched_ids:
             light_queue.enqueue(
                 job_detect,

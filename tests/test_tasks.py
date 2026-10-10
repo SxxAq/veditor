@@ -1596,6 +1596,82 @@ def test_job_ingest_room_url_success(tmp_path):
     assert mock_light_q.call_count == 2
 
 
+def test_job_ingest_room_url_download_failure_handles_cleanup(tmp_path):
+    from datetime import UTC, datetime, timedelta
+    from unittest.mock import MagicMock, patch
+
+    from app.models import Job, Talk
+    from app.tasks import job_ingest_room_url
+
+    now = datetime(2026, 9, 25, 10, 0, 0, tzinfo=UTC)
+    talk = Talk(
+        id=205,
+        event_id=10,
+        title="Talk Fail",
+        room="Room URL",
+        start=now,
+        end=now + timedelta(minutes=30),
+        status="waiting_for_files",
+    )
+    talks_dict = {205: talk}
+    jobs_dict = {}
+
+    class RoomMockDBSession:
+        def __enter__(self):
+            s = MagicMock()
+
+            def query_mock(model):
+                q = MagicMock()
+                if model == Talk:
+
+                    def filter_mock(*args):
+                        sub = MagicMock()
+                        sub.filter.return_value = sub
+                        sub.order_by.return_value = sub
+                        sub.all.return_value = list(talks_dict.values())
+                        return sub
+
+                    q.filter.side_effect = filter_mock
+                return q
+
+            s.query.side_effect = query_mock
+
+            def add_mock(instance):
+                if isinstance(instance, Job):
+                    jid = len(jobs_dict) + 1
+                    instance.id = jid
+                    jobs_dict[jid] = instance
+
+            s.add.side_effect = add_mock
+            s.get.side_effect = lambda model, obj_id: (
+                jobs_dict.get(obj_id) if model == Job else talks_dict.get(obj_id)
+            )
+            return s
+
+        def __exit__(self, *args):
+            pass
+
+    with (
+        patch("app.tasks.SessionLocal", side_effect=RoomMockDBSession),
+        patch(
+            "app.tasks.download_media_url",
+            side_effect=RuntimeError("Network download error"),
+        ),
+        pytest.raises(RuntimeError, match="Network download error"),
+    ):
+        job_ingest_room_url(
+            event_id=10,
+            room="Room URL",
+            video_url="https://youtube.com/watch?v=broken",
+            recording_start_iso=now.isoformat(),
+            talk_ids=[205],
+        )
+
+    assert talk.status == "broken"
+    assert len(jobs_dict) == 1
+    assert jobs_dict[1].status == "failed"
+
+
 # ── Cut-Bounds Pre-Seeding Tests ────────────────────────────────────────────
 
 
