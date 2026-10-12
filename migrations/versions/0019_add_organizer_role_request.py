@@ -1,15 +1,15 @@
 """Add organizer role request fields to users table.
 
-Revision ID: 0018_add_organizer_role_request
-Revises: 0017_add_user_email_verification
+Revision ID: 0019_add_organizer_role_request
+Revises: 0018
 Create Date: 2026-10-05
 """
 
-from alembic import op
 import sqlalchemy as sa
+from alembic import op
 
-revision = "0018"
-down_revision = "0017"
+revision = "0019"
+down_revision = "0018"
 branch_labels = None
 depends_on = None
 
