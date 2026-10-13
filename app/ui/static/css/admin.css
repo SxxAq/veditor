@@ -427,6 +427,17 @@ html[data-sidebar="hidden"] .settings-bottom-dock {
   justify-content: center;
 }
 
+.modal-icon-box.primary {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: rgba(37, 99, 235, 0.12);
+  color: var(--v-primary, #2563eb);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
 .modal-content-area {
   display: flex;
   flex-direction: column;
@@ -453,7 +464,8 @@ html[data-sidebar="hidden"] .settings-bottom-dock {
 }
 
 .btn-modal-cancel,
-.btn-modal-danger {
+.btn-modal-danger,
+.btn-modal-primary {
   flex: 1;
   padding: 0.6rem 1rem;
   border-radius: 8px;
@@ -472,6 +484,17 @@ html[data-sidebar="hidden"] .settings-bottom-dock {
   background: #ef4444;
   color: #ffffff;
   font-weight: 600;
+}
+
+.btn-modal-primary {
+  border: none;
+  background: var(--v-primary, #2563eb);
+  color: #ffffff;
+  font-weight: 600;
+}
+
+.btn-modal-primary:hover {
+  background: var(--v-primary-hover, #1d4ed8);
 }
 
 /* ── Overview Summary Panel ── */
