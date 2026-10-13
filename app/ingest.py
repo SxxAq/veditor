@@ -1,4 +1,3 @@
-import html
 import http.cookiejar
 import logging
 import re
@@ -8,6 +7,7 @@ import urllib.parse
 import urllib.request
 import uuid
 from decimal import ROUND_CEILING, Decimal
+from html.parser import HTMLParser
 from pathlib import Path
 
 import av
@@ -213,6 +213,39 @@ def resolve_direct_media_url(url: str) -> str:
     return clean_url
 
 
+class _DriveFormParser(HTMLParser):
+    """Extract confirmation form action and hidden parameters from Google Drive virus scan warning pages."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.action: str | None = None
+        self.inputs: dict[str, str] = {}
+        self.in_form = False
+        self.download_link: str | None = None
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attr_dict = {k: v or "" for k, v in attrs}
+        if tag == "form":
+            action = attr_dict.get("action", "")
+            form_id = attr_dict.get("id", "")
+            if "download" in action or form_id == "download-form":
+                self.action = action
+                self.in_form = True
+        elif tag == "input" and self.in_form:
+            name = attr_dict.get("name")
+            val = attr_dict.get("value", "")
+            if name:
+                self.inputs[name] = val
+        elif tag == "a":
+            href = attr_dict.get("href", "")
+            if "export=download" in href or "confirm=" in href:
+                self.download_link = href
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "form":
+            self.in_form = False
+
+
 def download_media_url(url: str, output_path: Path) -> Path:
     """Download a video file directly from an HTTP/HTTPS URL into output_path.
 
@@ -248,32 +281,36 @@ def download_media_url(url: str, output_path: Path) -> Path:
     req = urllib.request.Request(resolved_url, headers=headers)
 
     try:
-        resp = opener.open(req, timeout=30)
+        resp = opener.open(req, timeout=120)
 
         # Handle Google Drive large-file virus scan confirmation page
         content_type = resp.headers.get("Content-Type", "").lower()
         if "text/html" in content_type:
-            if "drive.google.com" in resolved_url:
+            resp_url = resp.geturl().lower()
+            if (
+                "drive.google.com" in resolved_url
+                or "drive.google.com" in resp_url
+                or "drive.usercontent.google.com" in resp_url
+            ):
                 body = resp.read().decode("utf-8", errors="ignore")
-                confirm_match = re.search(r'href="(/uc\?export=download[^"]*)"', body)
-                if confirm_match:
+                parser = _DriveFormParser()
+                parser.feed(body)
+                confirm_url = None
+                if parser.action:
+                    query = urllib.parse.urlencode(parser.inputs)
+                    confirm_url = f"{parser.action}?{query}" if query else parser.action
+                elif parser.download_link:
                     confirm_url = urllib.parse.urljoin(
-                        "https://drive.google.com",
-                        html.unescape(confirm_match.group(1)),
+                        "https://drive.google.com", parser.download_link
                     )
+
+                if confirm_url:
                     req_confirm = urllib.request.Request(confirm_url, headers=headers)
-                    resp = opener.open(req_confirm, timeout=30)
+                    resp = opener.open(req_confirm, timeout=120)
                 else:
-                    form_action = re.search(
-                        r'action="(https://drive\.google\.com/uc\?export=download[^"]*)"',
-                        body,
+                    raise ValueError(
+                        "Google Drive returned an HTML page without a valid download confirmation action."
                     )
-                    if form_action:
-                        confirm_url = html.unescape(form_action.group(1))
-                        req_confirm = urllib.request.Request(
-                            confirm_url, headers=headers
-                        )
-                        resp = opener.open(req_confirm, timeout=30)
             else:
                 parsed_netloc = urllib.parse.urlsplit(url).netloc.lower()
                 if "youtube.com" in parsed_netloc or "youtu.be" in parsed_netloc:
@@ -287,7 +324,7 @@ def download_media_url(url: str, output_path: Path) -> Path:
                 )
 
         downloaded_bytes = 0
-        chunk_size = 1024 * 1024  # 1 MB chunk
+        chunk_size = 64 * 1024  # 64 KB chunk
 
         # storage-boundary-exempt: write downloaded media stream to staging file
         with open(temp_target, "wb") as f_out:
