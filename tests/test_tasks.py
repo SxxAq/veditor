@@ -1747,6 +1747,25 @@ def test_download_media_url_exceeds_max_bytes(tmp_path):
     assert not target.exists()
 
 
+def test_download_media_url_rejects_html_page(tmp_path):
+    from unittest.mock import MagicMock, patch
+
+    from app.ingest import download_media_url
+
+    mock_resp = MagicMock()
+    mock_resp.headers = {"Content-Type": "text/html; charset=utf-8"}
+
+    mock_opener = MagicMock()
+    mock_opener.open.return_value = mock_resp
+
+    target = tmp_path / "out.mp4"
+    with (
+        patch("urllib.request.build_opener", return_value=mock_opener),
+        pytest.raises(ValueError, match="YouTube watch/stream links are web pages"),
+    ):
+        download_media_url("https://youtu.be/WVR7ZfuhoU8", target)
+
+
 # ── Cut-Bounds Pre-Seeding Tests ────────────────────────────────────────────
 
 

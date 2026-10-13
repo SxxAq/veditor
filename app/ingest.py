@@ -252,34 +252,60 @@ def download_media_url(url: str, output_path: Path) -> Path:
 
         # Handle Google Drive large-file virus scan confirmation page
         content_type = resp.headers.get("Content-Type", "").lower()
-        if "text/html" in content_type and "drive.google.com" in resolved_url:
-            body = resp.read().decode("utf-8", errors="ignore")
-            confirm_match = re.search(r'href="(/uc\?export=download[^"]*)"', body)
-            if confirm_match:
-                confirm_url = urllib.parse.urljoin(
-                    "https://drive.google.com", html.unescape(confirm_match.group(1))
-                )
-                req_confirm = urllib.request.Request(confirm_url, headers=headers)
-                resp = opener.open(req_confirm, timeout=30)
-            else:
-                form_action = re.search(
-                    r'action="(https://drive\.google\.com/uc\?export=download[^"]*)"',
-                    body,
-                )
-                if form_action:
-                    confirm_url = html.unescape(form_action.group(1))
+        if "text/html" in content_type:
+            if "drive.google.com" in resolved_url:
+                body = resp.read().decode("utf-8", errors="ignore")
+                confirm_match = re.search(r'href="(/uc\?export=download[^"]*)"', body)
+                if confirm_match:
+                    confirm_url = urllib.parse.urljoin(
+                        "https://drive.google.com",
+                        html.unescape(confirm_match.group(1)),
+                    )
                     req_confirm = urllib.request.Request(confirm_url, headers=headers)
                     resp = opener.open(req_confirm, timeout=30)
+                else:
+                    form_action = re.search(
+                        r'action="(https://drive\.google\.com/uc\?export=download[^"]*)"',
+                        body,
+                    )
+                    if form_action:
+                        confirm_url = html.unescape(form_action.group(1))
+                        req_confirm = urllib.request.Request(
+                            confirm_url, headers=headers
+                        )
+                        resp = opener.open(req_confirm, timeout=30)
+            else:
+                parsed_netloc = urllib.parse.urlsplit(url).netloc.lower()
+                if "youtube.com" in parsed_netloc or "youtu.be" in parsed_netloc:
+                    raise ValueError(
+                        "YouTube watch/stream links are web pages, not direct video files. "
+                        "Please provide a direct video URL (.mp4), Google Drive, or Dropbox link."
+                    )
+                raise ValueError(
+                    f"The provided URL returned a web page ({content_type}) instead of a direct video stream. "
+                    "Please ensure the link points directly to a video file, Google Drive, or Dropbox."
+                )
 
         downloaded_bytes = 0
         chunk_size = 1024 * 1024  # 1 MB chunk
 
         # storage-boundary-exempt: write downloaded media stream to staging file
         with open(temp_target, "wb") as f_out:
+            first_chunk = True
             while True:
                 chunk = resp.read(chunk_size)
                 if not chunk:
                     break
+                if first_chunk:
+                    first_chunk = False
+                    stripped = chunk.lstrip()
+                    if stripped.startswith(
+                        (b"<!DOCTYPE", b"<html", b"<HTML", b"<?xml")
+                    ):
+                        raise ValueError(
+                            "URL response contains HTML web markup rather than a video file. "
+                            "Please provide a direct media file URL, Google Drive, or Dropbox link."
+                        )
                 f_out.write(chunk)
                 downloaded_bytes += len(chunk)
                 if downloaded_bytes > max_bytes:
