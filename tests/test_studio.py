@@ -3608,7 +3608,7 @@ def test_attach_room_recording_with_video_url(
             json={
                 "room": "Auditorium Stream",
                 "event_id": event.id,
-                "video_url": "https://www.youtube.com/watch?v=livestream123",
+                "video_url": "https://example.com/recordings/livestream123.mp4",
             },
             headers={"X-API-Key": api_key},
         )
@@ -3627,7 +3627,7 @@ def test_attach_room_recording_with_video_url(
         call_args = mock_heavy_q.enqueue.call_args
         assert call_args.args[1] == event.id
         assert call_args.args[2] == "Auditorium Stream"
-        assert call_args.args[3] == "https://www.youtube.com/watch?v=livestream123"
+        assert call_args.args[3] == "https://example.com/recordings/livestream123.mp4"
 
 
 def test_attach_room_recording_with_video_url_multipart(
@@ -3672,7 +3672,7 @@ def test_attach_room_recording_with_video_url_multipart(
             data={
                 "room": "Auditorium Stream MP",
                 "event_id": str(event.id),
-                "video_url": "https://vimeo.com/987654321",
+                "video_url": "https://example.com/recordings/room_stream.mp4",
             },
             headers={"X-API-Key": api_key},
         )
@@ -3756,7 +3756,7 @@ def test_attach_room_recording_url_and_source_validations(
                 data={
                     "room": "Val Room",
                     "event_id": str(event.id),
-                    "video_url": "https://youtube.com/watch?v=conflict",
+                    "video_url": "https://example.com/recordings/conflict.mp4",
                 },
                 files={"file": ("clip.mp4", f_vid, "video/mp4")},
                 headers={"X-API-Key": api_key},

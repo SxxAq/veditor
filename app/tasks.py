@@ -244,7 +244,7 @@ def job_ingest_room_url(
     recording_start_iso: str | None = None,
     talk_ids: list[int] | None = None,
 ) -> None:
-    """Download a room recording from a video/livestream URL using yt-dlp,
+    """Download a room recording directly from a video URL or cloud storage link,
 
     validate and probe duration, and attach to matching talks in the room.
     """
@@ -277,7 +277,7 @@ def job_ingest_room_url(
                     job_ids[talk.id] = job.id
             db.commit()
 
-        # Download media using yt-dlp
+        # Download media directly from URL
         staged_path = download_media_url(video_url, staged_target)
 
         # Validate media & probe duration

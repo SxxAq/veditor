@@ -1581,7 +1581,7 @@ def test_job_ingest_room_url_success(tmp_path):
         job_ingest_room_url(
             event_id=10,
             room="Room URL",
-            video_url="https://youtube.com/watch?v=sample",
+            video_url="https://example.com/recordings/sample.mp4",
             recording_start_iso=now.isoformat(),
             talk_ids=[201, 202],
         )
@@ -1662,7 +1662,7 @@ def test_job_ingest_room_url_download_failure_handles_cleanup(tmp_path):
         job_ingest_room_url(
             event_id=10,
             room="Room URL",
-            video_url="https://youtube.com/watch?v=broken",
+            video_url="https://example.com/recordings/broken.mp4",
             recording_start_iso=now.isoformat(),
             talk_ids=[205],
         )
@@ -1670,6 +1670,81 @@ def test_job_ingest_room_url_download_failure_handles_cleanup(tmp_path):
     assert talk.status == "broken"
     assert len(jobs_dict) == 1
     assert jobs_dict[1].status == "failed"
+
+
+def test_resolve_direct_media_url():
+    from app.ingest import resolve_direct_media_url
+
+    # Direct URL passes through
+    assert (
+        resolve_direct_media_url("https://example.com/recordings/room1.mp4")
+        == "https://example.com/recordings/room1.mp4"
+    )
+
+    # Dropbox URL normalizes dl=1
+    db_res = resolve_direct_media_url(
+        "https://www.dropbox.com/s/abcdef123/video.mp4?dl=0"
+    )
+    assert "dl=1" in db_res
+
+    # Google Drive share link normalizes to export endpoint
+    gd_res = resolve_direct_media_url(
+        "https://drive.google.com/file/d/1AbC-xYz_123/view?usp=sharing"
+    )
+    assert (
+        gd_res
+        == "https://drive.google.com/uc?export=download&id=1AbC-xYz_123&confirm=t"
+    )
+
+    # Nextcloud share link normalizes to /download
+    nc_res = resolve_direct_media_url("https://cloud.example.org/s/abc123XYZ")
+    assert nc_res == "https://cloud.example.org/s/abc123XYZ/download"
+
+
+def test_download_media_url_streaming_success(tmp_path):
+    from unittest.mock import MagicMock, patch
+
+    from app.ingest import download_media_url
+
+    dummy_content = b"x" * 50000
+    mock_resp = MagicMock()
+    mock_resp.headers = {"Content-Type": "video/mp4"}
+    mock_resp.read.side_effect = [dummy_content[:25000], dummy_content[25000:], b""]
+
+    mock_opener = MagicMock()
+    mock_opener.open.return_value = mock_resp
+
+    target = tmp_path / "staged_download.mp4"
+    with patch("urllib.request.build_opener", return_value=mock_opener):
+        res = download_media_url("https://example.com/stream.mp4", target)
+
+    assert res == target
+    assert target.exists()
+    assert target.read_bytes() == dummy_content
+
+
+def test_download_media_url_exceeds_max_bytes(tmp_path):
+    from unittest.mock import MagicMock, patch
+
+    from app.ingest import download_media_url
+
+    mock_resp = MagicMock()
+    mock_resp.headers = {"Content-Type": "video/mp4"}
+    # Return 2MB of data when limit is patched to 1MB
+    mock_resp.read.side_effect = [b"A" * 1024 * 1024, b"B" * 1024 * 1024, b""]
+
+    mock_opener = MagicMock()
+    mock_opener.open.return_value = mock_resp
+
+    target = tmp_path / "too_large.mp4"
+    with (
+        patch("urllib.request.build_opener", return_value=mock_opener),
+        patch("app.config.settings.max_url_download_bytes", 1024 * 1024),
+        pytest.raises(ValueError, match="Download exceeded maximum allowed size"),
+    ):
+        download_media_url("https://example.com/too_large.mp4", target)
+
+    assert not target.exists()
 
 
 # ── Cut-Bounds Pre-Seeding Tests ────────────────────────────────────────────
