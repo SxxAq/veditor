@@ -36,7 +36,7 @@ from app.auth import (
     get_current_user,
     require_role,
 )
-from app.config import settings
+from app.config import get_setting, settings
 from app.db import get_db
 from app.ingest import (
     IngestPathRejectedError,
@@ -1703,11 +1703,18 @@ def create_talk_sso_token(
 
     target_email = payload.email if payload else None
     target_display_name = payload.display_name if payload else None
-    expires_in = (
-        payload.expires_in_seconds
-        if payload and payload.expires_in_seconds is not None
-        else (settings.speaker_magic_link_expire_hours * 3600)
-    )
+
+    if payload and payload.expires_in_seconds is not None:
+        expires_in = payload.expires_in_seconds
+    elif talk.event and talk.event.speaker_magic_link_expire_hours is not None:
+        expires_in = talk.event.speaker_magic_link_expire_hours * 3600
+    else:
+        global_hours = get_setting(
+            "speaker_magic_link_expire_hours",
+            default=settings.speaker_magic_link_expire_hours,
+            db=db,
+        )
+        expires_in = int(global_hours) * 3600
 
     token = create_sso_token(
         scope_type="talk",

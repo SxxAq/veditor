@@ -166,6 +166,21 @@ class SettingDefinition:
 
 
 SYSTEM_SETTING_DEFINITIONS: dict[str, SettingDefinition] = {
+    "speaker_magic_link_expire_hours": SettingDefinition(
+        key="speaker_magic_link_expire_hours",
+        title="Speaker Review Magic Link Expiry",
+        description="Default expiration window (in hours) for speaker review magic links sent via email.",
+        default_value=168,
+        value_type=int,
+        input_type="select",
+        options=(
+            ("24", "1 day (24 hours)"),
+            ("72", "3 days (72 hours)"),
+            ("168", "7 days (168 hours) - Default"),
+            ("336", "14 days (336 hours)"),
+            ("720", "30 days (720 hours)"),
+        ),
+    ),
     "detect_duration_tolerance_seconds": SettingDefinition(
         key="detect_duration_tolerance_seconds",
         title="Schedule Time Margin",

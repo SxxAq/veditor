@@ -23,6 +23,7 @@ class EventBase(BaseModel):
     source: str | None = None
     external_id: str | None = None
     retention_overrides: dict[str, Any] | None = None
+    speaker_magic_link_expire_hours: PositiveInt | None = None
 
     @field_validator("retention_overrides")
     @classmethod
@@ -41,6 +42,7 @@ class EventUpdate(BaseModel):
     source: str | None = None
     external_id: str | None = None
     retention_overrides: dict[str, Any] | None = None
+    speaker_magic_link_expire_hours: PositiveInt | None = None
 
     @field_validator("retention_overrides")
     @classmethod
