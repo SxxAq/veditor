@@ -22,7 +22,6 @@ from app.config import (
     PREVIEW_PRESETS,
     SYSTEM_SETTING_DEFINITIONS,
     SettingDefinition,
-    get_setting,
     settings,
 )
 from app.db import get_db
@@ -776,13 +775,6 @@ def admin_event_detail(
         "waiting": counts["waiting_for_files"],
     }
 
-    global_hours = get_setting(
-        "speaker_magic_link_expire_hours",
-        default=settings.speaker_magic_link_expire_hours,
-        db=db,
-    )
-    status_msg = request.query_params.get("status")
-
     return templates.TemplateResponse(
         request,
         "admin_event_detail.html.jinja",
@@ -791,69 +783,5 @@ def admin_event_detail(
             "talks": talks,
             "event_stats": event_stats,
             "progress_pct": progress_pct,
-            "global_speaker_magic_link_expire_hours": int(global_hours),
-            "status_msg": status_msg,
         },
-    )
-
-
-@router.post("/events/{event_id}/settings")
-async def update_admin_event_settings(
-    event_id: int,
-    request: Request,
-    db: Annotated[Session, Depends(get_db)],
-):
-    event = db.get(models.Event, event_id)
-    if not event:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Event not found",
-        )
-    raw_val = None
-    if "application/json" in request.headers.get("content-type", ""):
-        try:
-            payload = await request.json()
-            if not isinstance(payload, dict):
-                raise TypeError
-            raw_val = payload.get("speaker_magic_link_expire_hours")
-        except TypeError, ValueError, json.JSONDecodeError:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="JSON payload must be an object",
-            )
-    else:
-        form = await request.form()
-        raw_val = form.get("speaker_magic_link_expire_hours")
-
-    if (
-        raw_val is None
-        or str(raw_val).strip() == ""
-        or str(raw_val).strip().lower() in ("default", "none")
-    ):
-        event.speaker_magic_link_expire_hours = None
-    else:
-        try:
-            val = int(raw_val)
-            if val <= 0:
-                raise ValueError
-            event.speaker_magic_link_expire_hours = val
-        except ValueError, TypeError:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="speaker_magic_link_expire_hours must be a positive integer or empty for default",
-            )
-
-    db.commit()
-    db.refresh(event)
-
-    if "application/json" in request.headers.get("content-type", ""):
-        return {
-            "status": "ok",
-            "event_id": event.id,
-            "speaker_magic_link_expire_hours": event.speaker_magic_link_expire_hours,
-        }
-
-    return RedirectResponse(
-        url=f"/admin/events/{event_id}?status=settings_saved",
-        status_code=status.HTTP_303_SEE_OTHER,
     )

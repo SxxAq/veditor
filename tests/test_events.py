@@ -1297,7 +1297,10 @@ def test_event_create_and_patch_speaker_magic_link_expire_hours(mock_db):
     )
 
     mock_event = models.Event(
-        id=99, name="Test Expiry Event", created_by_user_id=5, speaker_magic_link_expire_hours=72
+        id=99,
+        name="Test Expiry Event",
+        created_by_user_id=5,
+        speaker_magic_link_expire_hours=72,
     )
     mock_db.query.return_value.filter.return_value.first.return_value = mock_event
 

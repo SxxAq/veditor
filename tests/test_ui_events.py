@@ -1459,3 +1459,56 @@ def test_studio_breadcrumb_is_plain_text_for_talk_scoped_sso(
     assert "Room Test Event" in studio.text
     assert 'id="breadcrumb-event-link"' not in studio.text
     assert 'id="breadcrumb-room-link"' not in studio.text
+
+
+def test_post_events_create_and_edit_speaker_review_window(
+    client: TestClient, db_session
+):
+    """Organizer can set and edit per-event speaker review expiration window in /studio/events."""
+    org = create_user(db_session, "window_org@test.com", "organizer")
+    authenticate_client(client, org)
+
+    # 1. Create with custom expiration window
+    response = client.post(
+        "/studio/events",
+        data={
+            "name": "Custom Review Window Event",
+            "speaker_magic_link_expire_hours": "72",
+        },
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+
+    event = (
+        db_session.query(models.Event)
+        .filter(models.Event.name == "Custom Review Window Event")
+        .first()
+    )
+    assert event is not None
+    assert event.speaker_magic_link_expire_hours == 72
+
+    # 2. Edit expiration window to 336 hours (14 days)
+    resp_edit = client.post(
+        f"/studio/events/{event.id}/edit",
+        data={
+            "name": "Custom Review Window Event Renamed",
+            "speaker_magic_link_expire_hours": "336",
+        },
+        follow_redirects=False,
+    )
+    assert resp_edit.status_code == 303
+    db_session.refresh(event)
+    assert event.speaker_magic_link_expire_hours == 336
+
+    # 3. Clear expiration window to inherit platform default
+    resp_clear = client.post(
+        f"/studio/events/{event.id}/edit",
+        data={
+            "name": "Custom Review Window Event Renamed",
+            "speaker_magic_link_expire_hours": "",
+        },
+        follow_redirects=False,
+    )
+    assert resp_clear.status_code == 303
+    db_session.refresh(event)
+    assert event.speaker_magic_link_expire_hours is None

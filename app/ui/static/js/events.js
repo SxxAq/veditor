@@ -14,9 +14,14 @@ document.addEventListener('DOMContentLoaded', () => {
     btn.addEventListener('click', () => {
       const id = btn.getAttribute('data-event-id');
       const name = btn.getAttribute('data-event-name');
+      const expireHours = btn.getAttribute('data-event-expire-hours') || '';
+      const editExpire = document.getElementById('edit-event-review-window');
       if (editForm && editInput) {
         editForm.action = `/studio/events/${id}/edit`;
         editInput.value = name || '';
+      }
+      if (editExpire) {
+        editExpire.value = expireHours;
       }
       if (editModal) {
         editModal.classList.add('active');

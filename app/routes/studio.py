@@ -19,7 +19,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from app import models, schemas
 from app.auth import CurrentUser, hash_api_key
-from app.config import settings
+from app.config import get_setting, settings
 from app.db import get_db
 from app.queue import light_queue
 from app.routes.auth import _get_authenticated_user_from_cookie
@@ -964,12 +964,18 @@ def list_studio_events(
         .all()
     )
 
+    global_hours = get_setting(
+        "speaker_magic_link_expire_hours",
+        default=settings.speaker_magic_link_expire_hours,
+        db=db,
+    )
     return templates.TemplateResponse(
         request,
         "events.html.jinja",
         {
             "events": events,
             "error": None,
+            "global_speaker_magic_link_expire_hours": int(global_hours),
         },
         headers={"Cache-Control": "no-store"},
     )
@@ -980,6 +986,7 @@ def create_studio_event(
     request: Request,
     db: Annotated[Session, Depends(get_db)],
     name: Annotated[str, Form()] = "",
+    speaker_magic_link_expire_hours: Annotated[str, Form()] = "",
 ):
     cookie_token = request.cookies.get("veditor_session")
     if cookie_token and decode_sso_token(cookie_token) is not None:
@@ -1018,8 +1025,18 @@ def create_studio_event(
             headers={"Cache-Control": "no-store"},
         )
 
+    parsed_hours = None
+    if speaker_magic_link_expire_hours and str(speaker_magic_link_expire_hours).strip():
+        try:
+            val = int(speaker_magic_link_expire_hours)
+            if val > 0:
+                parsed_hours = val
+        except ValueError, TypeError:
+            pass
+
     event = models.Event(
         name=clean_name,
+        speaker_magic_link_expire_hours=parsed_hours,
         created_by_user_id=user.id,
     )
     db.add(event)
@@ -1038,6 +1055,7 @@ def edit_studio_event(
     event_id: int,
     db: Annotated[Session, Depends(get_db)],
     name: Annotated[str, Form()] = "",
+    speaker_magic_link_expire_hours: Annotated[str, Form()] = "",
 ):
     cookie_token = request.cookies.get("veditor_session")
     if cookie_token and decode_sso_token(cookie_token) is not None:
@@ -1076,6 +1094,17 @@ def edit_studio_event(
         )
 
     event.name = clean_name
+    if speaker_magic_link_expire_hours is not None:
+        raw_h = str(speaker_magic_link_expire_hours).strip()
+        if not raw_h or raw_h.lower() in ("default", "none"):
+            event.speaker_magic_link_expire_hours = None
+        else:
+            try:
+                val = int(raw_h)
+                if val > 0:
+                    event.speaker_magic_link_expire_hours = val
+            except ValueError, TypeError:
+                pass
     db.commit()
     return RedirectResponse(url="/studio/events", status_code=status.HTTP_303_SEE_OTHER)
 
