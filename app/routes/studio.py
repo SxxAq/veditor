@@ -1014,12 +1014,18 @@ def create_studio_event(
             .order_by(models.Event.id.asc())
             .all()
         )
+        global_hours = get_setting(
+            "speaker_magic_link_expire_hours",
+            default=settings.speaker_magic_link_expire_hours,
+            db=db,
+        )
         return templates.TemplateResponse(
             request,
             "events.html.jinja",
             {
                 "events": events,
                 "error": "Event name is required.",
+                "global_speaker_magic_link_expire_hours": int(global_hours),
             },
             status_code=status.HTTP_400_BAD_REQUEST,
             headers={"Cache-Control": "no-store"},
@@ -1027,12 +1033,37 @@ def create_studio_event(
 
     parsed_hours = None
     if speaker_magic_link_expire_hours and str(speaker_magic_link_expire_hours).strip():
-        try:
-            val = int(speaker_magic_link_expire_hours)
-            if val > 0:
+        raw_val = str(speaker_magic_link_expire_hours).strip()
+        if raw_val.lower() not in ("default", "none"):
+            try:
+                val = int(raw_val)
+                if val <= 0:
+                    raise ValueError
                 parsed_hours = val
-        except ValueError, TypeError:
-            pass
+            except ValueError, TypeError:
+                events = (
+                    db.query(models.Event)
+                    .options(selectinload(models.Event.created_by_user))
+                    .filter(models.Event.created_by_user_id == user.id)
+                    .order_by(models.Event.id.asc())
+                    .all()
+                )
+                global_hours = get_setting(
+                    "speaker_magic_link_expire_hours",
+                    default=settings.speaker_magic_link_expire_hours,
+                    db=db,
+                )
+                return templates.TemplateResponse(
+                    request,
+                    "events.html.jinja",
+                    {
+                        "events": events,
+                        "error": "Speaker review window must be a positive integer",
+                        "global_speaker_magic_link_expire_hours": int(global_hours),
+                    },
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    headers={"Cache-Control": "no-store"},
+                )
 
     event = models.Event(
         name=clean_name,
@@ -1101,10 +1132,14 @@ def edit_studio_event(
         else:
             try:
                 val = int(raw_h)
-                if val > 0:
-                    event.speaker_magic_link_expire_hours = val
+                if val <= 0:
+                    raise ValueError
+                event.speaker_magic_link_expire_hours = val
             except ValueError, TypeError:
-                pass
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Speaker review window must be a positive integer",
+                )
     db.commit()
     return RedirectResponse(url="/studio/events", status_code=status.HTTP_303_SEE_OTHER)
 

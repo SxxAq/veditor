@@ -21,6 +21,12 @@ document.addEventListener('DOMContentLoaded', () => {
         editInput.value = name || '';
       }
       if (editExpire) {
+        if (expireHours && !editExpire.querySelector(`option[value="${expireHours}"]`)) {
+          const opt = document.createElement('option');
+          opt.value = expireHours;
+          opt.textContent = `Custom (${expireHours} hours)`;
+          editExpire.appendChild(opt);
+        }
         editExpire.value = expireHours;
       }
       if (editModal) {
