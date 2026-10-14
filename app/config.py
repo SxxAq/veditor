@@ -66,6 +66,7 @@ class Settings(BaseSettings):
     session_token_expire_hours: int = 168
     access_token_expire_seconds: int = 3600
     sso_token_expire_seconds: int = 300
+    speaker_magic_link_expire_hours: int = 168
     email_verification_expire_hours: int = 24
     password_reset_expire_hours: int = 1
 
@@ -106,6 +107,7 @@ class Settings(BaseSettings):
         "session_token_expire_hours",
         "access_token_expire_seconds",
         "sso_token_expire_seconds",
+        "speaker_magic_link_expire_hours",
         "email_verification_expire_hours",
         "password_reset_expire_hours",
         mode="after",

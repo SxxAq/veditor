@@ -9,6 +9,7 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    PositiveInt,
     computed_field,
     field_validator,
     model_validator,
@@ -411,6 +412,7 @@ class TalkSSOTokenRequest(BaseModel):
     email: str | None = None
     display_name: str | None = None
     event_id: int | str | None = None
+    expires_in_seconds: PositiveInt | None = None
 
 
 class ApiKeyRead(BaseModel):

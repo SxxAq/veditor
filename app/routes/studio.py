@@ -1,5 +1,6 @@
 import logging
 import urllib.parse
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated
 
@@ -333,11 +334,17 @@ def dashboard(
             dest_url = f"/studio/talks/{sso_payload['scope_id']}"
         else:
             dest_url = f"/studio?event_id={sso_payload['scope_id']}"
+        exp_timestamp = sso_payload.get("exp")
+        if isinstance(exp_timestamp, (int, float)):
+            cookie_max_age = max(int(exp_timestamp - datetime.now(UTC).timestamp()), 0)
+        else:
+            cookie_max_age = settings.sso_token_expire_seconds
+
         resp = RedirectResponse(url=dest_url, status_code=status.HTTP_303_SEE_OTHER)
         resp.set_cookie(
             key="veditor_session",
             value=raw_sso,
-            max_age=settings.sso_token_expire_seconds,
+            max_age=cookie_max_age,
             httponly=True,
             samesite="lax",
             secure=is_secure,
@@ -768,13 +775,19 @@ def studio(
         is_secure = (request.url.scheme == "https") or (
             settings.environment.lower() in ("production", "prod")
         )
+        exp_timestamp = sso_payload.get("exp")
+        if isinstance(exp_timestamp, (int, float)):
+            cookie_max_age = max(int(exp_timestamp - datetime.now(UTC).timestamp()), 0)
+        else:
+            cookie_max_age = settings.sso_token_expire_seconds
+
         resp = RedirectResponse(
             url=f"/studio/talks/{talk_id}", status_code=status.HTTP_303_SEE_OTHER
         )
         resp.set_cookie(
             key="veditor_session",
             value=raw_sso,
-            max_age=settings.sso_token_expire_seconds,
+            max_age=cookie_max_age,
             httponly=True,
             samesite="lax",
             secure=is_secure,

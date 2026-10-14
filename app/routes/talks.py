@@ -1703,12 +1703,17 @@ def create_talk_sso_token(
 
     target_email = payload.email if payload else None
     target_display_name = payload.display_name if payload else None
+    expires_in = (
+        payload.expires_in_seconds
+        if payload and payload.expires_in_seconds is not None
+        else (settings.speaker_magic_link_expire_hours * 3600)
+    )
 
     token = create_sso_token(
         scope_type="talk",
         scope_id=talk.id,
         role="speaker",
-        expires_in_seconds=settings.sso_token_expire_seconds,
+        expires_in_seconds=expires_in,
         email=target_email,
         display_name=target_display_name,
     )
@@ -1718,7 +1723,7 @@ def create_talk_sso_token(
         scope_type="talk",
         scope_id=talk.id,
         role="speaker",
-        expires_in_seconds=settings.sso_token_expire_seconds,
+        expires_in_seconds=expires_in,
         url=f"/studio/talks/{talk.id}?sso_token={token}",
     )
 
